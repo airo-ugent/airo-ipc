@@ -14,7 +14,7 @@ from typing import Dict, List
 import numpy as np
 from cyclonedds.domain import DomainParticipant
 
-from airo_ipc.cyclone_shm.cantrips import load_config
+from airo_ipc.cyclone_shm.cantrips.configs import load_config
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter

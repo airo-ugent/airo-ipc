@@ -14,9 +14,9 @@ from multiprocessing import shared_memory, resource_tracker
 import numpy as np
 from cyclonedds.domain import DomainParticipant
 
-from airo_ipc.cyclone_shm.cantrips import load_config
+from airo_ipc.cyclone_shm.cantrips.configs import load_config
 from airo_ipc.cyclone_shm.cantrips.exceptions import WaitingForFirstMessageException
-from airo_ipc.cyclone_shm.cantrips.logging import get_logger
+from airo_ipc.cyclone_shm.cantrips.logging.logger import get_logger
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
