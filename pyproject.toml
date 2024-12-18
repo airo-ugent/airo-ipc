@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airo-ipc"
+version = "0.0.1"
+authors = [
+    { name = "Matthijs Biondina", email = "matthijs.biondina@ugent.be" },
+    { name = "Mathieu De Coster", email = "mathieu.decoster@ugent.be" },
+]
+description = "IPC framework for AIRO."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = ["loguru>=0.7.2", "cyclonedds>=0.10.5", "munch>=4.0.0", "sympy>=1.13.3"]
+
+[project.urls]
+Homepage = "https://github.com/airo-ugent/airo-ipc"
+Issues = "https://github.com/airo-ugent/airo-ipc/issues"
+
+[tools.setuptools]
+packages = ["airo_ipc"]
