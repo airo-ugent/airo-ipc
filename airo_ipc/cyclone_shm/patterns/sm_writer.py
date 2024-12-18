@@ -82,7 +82,7 @@ class SMWriter:
         # Create a DDS writer for buffer numbers
         self.buffer_nr_writer = DDSWriter(
             domain_participant=domain_participant,
-            topic_name=f"{topic_name}.buffer_nr",
+            topic_name=f"{topic_name}__buffer_nr",
             idl_dataclass=BufferNrSample,
         )
 

@@ -112,7 +112,7 @@ class SMReader:
         # Create a DDS reader for buffer numbers
         self.buffer_nr_reader = DDSReader(
             domain_participant=domain_participant,
-            topic_name=f"{topic_name}.buffer_nr",
+            topic_name=f"{topic_name}__buffer_nr",
             idl_dataclass=BufferNrSample,
         )
         # Wait for the writer to start publishing
