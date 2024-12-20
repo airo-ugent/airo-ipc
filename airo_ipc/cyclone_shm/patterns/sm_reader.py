@@ -13,13 +13,15 @@ from multiprocessing import shared_memory, resource_tracker
 
 import numpy as np
 from cyclonedds.domain import DomainParticipant
+from loguru import logger
 
-from airo_ipc.cyclone_shm.cantrips.configs import load_config
-from airo_ipc.cyclone_shm.cantrips.exceptions import WaitingForFirstMessageException
-from airo_ipc.cyclone_shm.cantrips.logging.logger import get_logger
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
+
+
+class WaitingForFirstMessageException(Exception):
+    pass
 
 
 class SharedMemoryNoResourceTracker:
@@ -29,6 +31,7 @@ class SharedMemoryNoResourceTracker:
     This prevents the resource_tracker from automatically unlinking the shared memory segment
     when the process exits, which is useful when multiple processes need to share the memory.
     """
+
     def __init__(self, name):
         """
         Initialize the shared memory segment.
@@ -57,6 +60,7 @@ class SMBufferReadField:
     This class attaches to a shared memory segment and creates a numpy array
     that uses the shared memory as its buffer.
     """
+
     def __init__(self, name, shape, dtype, nbytes):
         """
         Initialize the shared memory buffer field.
@@ -78,9 +82,6 @@ class SMBufferReadField:
         self.shm.close()
 
 
-logger = get_logger()
-
-
 class SMReader:
     """
     Reads shared memory buffers using Cyclone DDS for synchronization.
@@ -89,11 +90,13 @@ class SMReader:
     It listens to a DDS topic for buffer numbers and reads the corresponding
     buffers from shared memory.
     """
+
     def __init__(
-        self,
-        domain_participant: DomainParticipant,
-        topic_name: str,
-        idl_dataclass: BaseIDL,
+            self,
+            domain_participant: DomainParticipant,
+            topic_name: str,
+            idl_dataclass: BaseIDL,
+            nr_of_buffers: int = 2,
     ):
         """
         Initialize the shared memory reader.
@@ -102,12 +105,12 @@ class SMReader:
             domain_participant (DomainParticipant): The DDS domain participant.
             topic_name (str): The base name of the topic.
             idl_dataclass (BaseIDL): The template defining the buffer structure.
+            nr_of_buffers (int): The number of shared memory buffers per field.
         """
-        self.config = load_config()
-
         self.domain_participant = domain_participant
         self.topic_name = topic_name
         self.buffer_template = idl_dataclass
+        self.nr_of_buffers = nr_of_buffers
 
         # Create a DDS reader for buffer numbers
         self.buffer_nr_reader = DDSReader(
@@ -151,12 +154,12 @@ class SMReader:
             list: A list of dictionaries, each containing buffer fields.
         """
         # Initialize a list to hold buffers for each buffer index
-        buffers = [{} for _ in range(self.config.nr_of_buffers)]
+        buffers = [{} for _ in range(self.nr_of_buffers)]
 
         # Iterate over each field defined in the buffer template
         for name, shape, dtype, nbytes in self.buffer_template.get_fields():
             # For each buffer index, create a shared memory field
-            for buffer_idx in range(self.config.nr_of_buffers):
+            for buffer_idx in range(self.nr_of_buffers):
                 buffers[buffer_idx][name] = SMBufferReadField(
                     f"{self.topic_name}.{name}.buffer_{buffer_idx}",
                     shape,
@@ -179,7 +182,7 @@ class SMReader:
         t0 = time.time()
         warned = 0
         while self.buffer_nr_reader() is None and (
-            timeout is None or (time.time() - t0) < timeout
+                timeout is None or (time.time() - t0) < timeout
         ):
             if warn_every * (warned + 1) < (time.time() - t0):
                 warned += 1
@@ -188,14 +191,14 @@ class SMReader:
                 warning_msg = (
                     f"Shared Memory Reader {self.topic_name} has been "
                     f"waiting for Shared Memory Writer for more than "
-                    f"{warned*warn_every} seconds. "
+                    f"{warned * warn_every} seconds. "
                 )
                 if timeout is None:
                     warning_msg += f"No timeout defined; will wait indefinitely."
                 else:
                     warning_msg += (
                         f"Timeout: {timeout} seconds. Will wait for "
-                        f"{timeout-warned*warn_every} more seconds."
+                        f"{timeout - warned * warn_every} more seconds."
                     )
 
                 logger.warning(warning_msg)

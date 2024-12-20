@@ -84,7 +84,7 @@ domain_participant = DomainParticipant()
 writer = SMWriter(
     domain_participant=domain_participant,
     topic_name="frame_data",
-    idl_dataclass=FrameBuffer()
+    idl_dataclass=FrameBuffer(),
 )
 
 # Write data to shared memory
@@ -133,6 +133,8 @@ except WaitingForFirstMessageException:
 - **Known Shapes and Data Types**: The shape and `dtype` of each numpy array must be known in advance and consistent
   between the writer and readers. (\*)
 - **Single Writer**: Only one writer process is supported to prevent race conditions and ensure data consistency.
+- **Fixed buffer count**: Buffers are used for efficient synchronization between the writer and readers. The number of
+  buffers is fixed and must be specified when creating the writer and reader instances.
 
 \(*) This does not mean that you need one Idl Dataclass per shape and dtype, but that the shape and dtype of each numpy
 array must be known in advance (at `SMWriter` and `SMReader` creation time)

@@ -4,23 +4,21 @@ from typing import Type, AnyStr
 from cyclonedds.pub import DataWriter
 from cyclonedds.sub import DataReader
 from cyclonedds.topic import Topic
+from loguru import logger
 
-from airo_ipc.cyclone_shm.cantrips.logging import get_logger
 from airo_ipc.cyclone_shm import CycloneParticipant
 from airo_ipc.cyclone_shm.defaults import CYCLONE_DEFAULTS
 from airo_ipc.cyclone_shm.idl.defaults.rpc_idl import RPCIdl
 from airo_ipc.cyclone_shm.idl.defaults.rpc_status_idl import RPCStatus
 
-logger = get_logger()
-
 
 class Requester:
     def __init__(
-        self,
-        domain_participant: CycloneParticipant,
-        rpc_name: AnyStr,
-        idl_dataclass: Type[RPCIdl],
-        deadline: float = 30,
+            self,
+            domain_participant: CycloneParticipant,
+            rpc_name: AnyStr,
+            idl_dataclass: Type[RPCIdl],
+            deadline: float = 30,
     ):
         self.participant = domain_participant
         self.rpc_name = rpc_name
