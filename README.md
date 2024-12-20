@@ -42,6 +42,7 @@ shared memory communication utilities.
 
 This repository also contains a `framework` package, which provides a high-level interface for using shared memory and
 DDS communication together. It is not required, but may facilitate common use cases.
+See [the framework README](airo_ipc/framework/README.md) for more information.
 
 ### Examples
 
