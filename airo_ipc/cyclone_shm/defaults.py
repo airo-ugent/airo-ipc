@@ -1,6 +1,5 @@
 from cyclonedds.qos import Qos, Policy
 from cyclonedds.util import duration
-from sympy.physics.units import millisecond, milli
 
 
 class CYCLONE_DEFAULTS:
@@ -16,7 +15,6 @@ class CYCLONE_DEFAULTS:
             max_samples=1, max_instances=1, max_samples_per_instance=1
         ),
     )
-
     QOS_RPC_STATUS = Qos(
         Policy.Reliability.Reliable(max_blocking_time=1),
         Policy.Deadline(duration(milliseconds=1000)),
