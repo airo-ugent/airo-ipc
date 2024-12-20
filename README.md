@@ -39,3 +39,10 @@ pip install -e airo-ipc/
 
 See [the shared memory communication README](airo_ipc/cyclone_shm/README.md) for more information on how to use the
 shared memory communication utilities.
+
+This repository also contains a `framework` package, which provides a high-level interface for using shared memory and
+DDS communication together. It is not required, but may facilitate common use cases.
+
+### Examples
+
+See the `examples/` directory to learn how to use airo-ipc.
