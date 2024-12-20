@@ -61,7 +61,7 @@ class SMBufferReadField:
     that uses the shared memory as its buffer.
     """
 
-    def __init__(self, name, shape, dtype, nbytes):
+    def __init__(self, name, shape, dtype):
         """
         Initialize the shared memory buffer field.
 
@@ -69,7 +69,6 @@ class SMBufferReadField:
             name (str): The name of the shared memory block.
             shape (tuple): The shape of the numpy array.
             dtype (numpy.dtype): The data type of the numpy array.
-            nbytes (int): The number of bytes in the shared memory buffer.
         """
         self.shm = SharedMemoryNoResourceTracker(name=name)
         self.shared_array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
@@ -164,7 +163,6 @@ class SMReader:
                     f"{self.topic_name}.{name}.buffer_{buffer_idx}",
                     shape,
                     dtype,
-                    nbytes,
                 )
         return buffers
 
@@ -204,7 +202,7 @@ class SMReader:
                 logger.warning(warning_msg)
 
             # Sleep briefly to yield control and prevent busy waiting
-            self.domain_participant.sleep()
+            time.sleep(0.01)
 
         if self.buffer_nr_reader() is None:
             # If the writer has not started within the timeout, raise an error

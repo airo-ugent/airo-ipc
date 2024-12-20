@@ -2,26 +2,25 @@ import time
 from threading import Thread
 from typing import AnyStr, Callable, Type
 
-from loguru import logger
+from cyclonedds.domain import DomainParticipant
 from cyclonedds.internal import InvalidSample
 from cyclonedds.pub import DataWriter
 from cyclonedds.sub import DataReader
 from cyclonedds.topic import Topic
+from loguru import logger
 
-from airo_ipc.cyclone_shm.cyclone_participant import CycloneParticipant
 from airo_ipc.cyclone_shm.defaults import CYCLONE_DEFAULTS
 from airo_ipc.cyclone_shm.idl.defaults.rpc_idl import RPCIdl
 from airo_ipc.cyclone_shm.idl.defaults.rpc_status_idl import RPCStatus
 
 
-
 class Responder:
     def __init__(
-        self,
-        domain_participant: CycloneParticipant,
-        rpc_name: AnyStr,
-        idl_dataclass: Type[RPCIdl],
-        callback: Callable[[RPCIdl.Request], RPCIdl.Response],
+            self,
+            domain_participant: DomainParticipant,
+            rpc_name: AnyStr,
+            idl_dataclass: Type[RPCIdl],
+            callback: Callable[[RPCIdl.Request], RPCIdl.Response],
     ):
         self.participant = domain_participant
         self.callback = callback
@@ -101,4 +100,4 @@ class Responder:
                     self.writer.write(response)
             except IndexError:
                 pass
-            self.participant.sleep()
+            time.sleep(0.01)

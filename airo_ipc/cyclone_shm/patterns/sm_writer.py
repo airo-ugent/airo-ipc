@@ -8,7 +8,7 @@ Classes:
 
 import atexit
 import time
-from multiprocessing import shared_memory
+from multiprocessing import shared_memory, resource_tracker
 from typing import Dict, List
 
 import numpy as np
@@ -17,6 +17,7 @@ from cyclonedds.domain import DomainParticipant
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
+from airo_ipc.cyclone_shm.patterns.sm_reader import SharedMemoryNoResourceTracker
 
 
 class SMBufferWriteField:
@@ -78,6 +79,7 @@ class SMWriter:
         self.domain_participant = domain_participant
         self.topic_name = topic_name
         self.buffer_template = idl_dataclass
+        self.nr_of_buffers = nr_of_buffers
 
         # Create a DDS writer for buffer numbers
         self.buffer_nr_writer = DDSWriter(
@@ -98,7 +100,7 @@ class SMWriter:
             msg (BaseIDL): The data to write to shared memory.
         """
         # Rotate to the next buffer index
-        self.buffer_idx = (self.buffer_idx + 1) % self.config.nr_of_buffers
+        self.buffer_idx = (self.buffer_idx + 1) % self.nr_of_buffers
 
         buffer = self.buffers[self.buffer_idx]
         # Write each field to the shared memory buffer
@@ -117,12 +119,12 @@ class SMWriter:
             List[Dict[str, SMBufferWriteField]]: A list of dictionaries, each containing buffer fields.
         """
         # Initialize a list to hold buffers for each buffer index
-        buffers = [{} for _ in range(self.config.nr_of_buffers)]
+        buffers = [{} for _ in range(self.nr_of_buffers)]
 
         # Iterate over each field defined in the buffer template
         for name, shape, dtype, nbytes in self.buffer_template.get_fields():
             # For each buffer index, create a shared memory field
-            for buffer_idx in range(self.config.nr_of_buffers):
+            for buffer_idx in range(self.nr_of_buffers):
                 buffers[buffer_idx][name] = SMBufferWriteField(
                     f"{self.topic_name}.{name}.buffer_{buffer_idx}",
                     shape,
