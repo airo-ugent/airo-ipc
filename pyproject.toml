@@ -18,7 +18,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-dependencies = ["loguru>=0.7.2", "cyclonedds>=0.10.5", "numpy>=2.0"]
+dependencies = ["loguru>=0.7.2", "cyclonedds>=0.10.5", "numpy"]
 
 [project.urls]
 Homepage = "https://github.com/airo-ugent/airo-ipc"
