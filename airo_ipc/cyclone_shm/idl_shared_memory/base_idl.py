@@ -32,3 +32,6 @@ class BaseIDL:
             # Only process fields that are numpy arrays
             if isinstance(array, np.ndarray):
                 yield (field.name, array.shape, array.dtype, array.nbytes)
+            else:
+                raise AttributeError(f"BaseIDL subclasses only support NumPy types: {field.name} violates this.")
+
