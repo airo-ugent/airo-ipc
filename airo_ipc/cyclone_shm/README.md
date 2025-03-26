@@ -127,6 +127,10 @@ except WaitingForFirstMessageException:
     print("Waiting for data...")
 ```
 
+Note that the `SMReader` deliberately does **not** make a copy of the incoming data. This means it is your responsibility
+to make a deep copy if you need to have consistent data. This is done for performance reasons: in some cases, speed
+is more important than data consistency.
+
 ## Limitations
 
 - **Numpy Arrays Only**: The system currently supports only numpy arrays as data fields.
