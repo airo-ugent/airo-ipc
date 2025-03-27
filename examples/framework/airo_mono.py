@@ -109,7 +109,7 @@ class WebcamSubscriber(RGBCamera):
     def _grab_images(self) -> None:
         frame = self._reader_rgb()
         if frame is not None:
-            self._rgb = frame.rgb  # Already copied in the SMReader.
+            self._rgb = frame.rgb.copy() # SMReader does not copy arrays: we need to do this ourselves.
             self._intrinsics_matrix = frame.intrinsics
 
 

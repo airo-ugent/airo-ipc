@@ -140,8 +140,7 @@ class SMReader:
 
         kwargs = {}
         for key, bufferfield in buffer.items():
-            # Copy the data from shared memory into a numpy array
-            kwargs[key] = bufferfield.shared_array.copy()
+            kwargs[key] = bufferfield.shared_array
 
         return self.buffer_template.__class__(**kwargs)
 
