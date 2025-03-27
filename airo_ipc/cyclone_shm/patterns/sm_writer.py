@@ -19,7 +19,6 @@ from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
 from airo_ipc.cyclone_shm.patterns.sm_reader import SharedMemoryNoResourceTracker
 
-
 class SMBufferWriteField:
     """
     Manages a numpy array backed by shared memory for writing.
@@ -38,8 +37,17 @@ class SMBufferWriteField:
             dtype (numpy.dtype): The data type of the numpy array.
             nbytes (int): The number of bytes in the shared memory buffer.
         """
+
+        try:
+            self.shm = shared_memory.SharedMemory(create=True, size=nbytes, name=name)
+        except FileExistsError:
+            # this can occur if the process was killed and the shared memory was not cleaned up
+            print(f"Shared memory file {name} exists. Will unlink and re-create it.")
+
+            shm_old = shared_memory.SharedMemory(create=False, size=nbytes, name=name)
+            shm_old.unlink()
+            self.shm = shared_memory.SharedMemory(create=True, size=nbytes, name=name)
         # Create a new shared memory block with the given name and size
-        self.shm = shared_memory.SharedMemory(name=name, create=True, size=nbytes)
         # Create a numpy array that uses the shared memory buffer
         self.shared_array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
 
