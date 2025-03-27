@@ -140,7 +140,7 @@ class SMReader:
 
         kwargs = {}
         for key, bufferfield in buffer.items():
-            kwargs[key][:] = bufferfield.shared_array[:]
+            kwargs[key] = bufferfield.shared_array
 
         return self.buffer_template.__class__(**kwargs)
 
