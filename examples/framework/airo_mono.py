@@ -23,7 +23,7 @@ from loguru import logger
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
 from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
-from airo_ipc.framework.framework import initialize_ipc, IpcKind
+from airo_ipc.framework.framework import IpcKind
 from airo_ipc.framework.node import Node
 
 TOPIC_RESOLUTION: Final[str] = "resolution"
@@ -114,8 +114,6 @@ class WebcamSubscriber(RGBCamera):
 
 
 if __name__ == '__main__':
-    initialize_ipc()
-
     logger.info("Creating publisher.")
     publisher = RGBCameraPublisher(20, True)
     logger.info("Starting publisher.")
