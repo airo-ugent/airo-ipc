@@ -25,7 +25,7 @@ class Node(SpawnProcess, ABC):
         super().__init__()
 
         self._update_frequency = update_frequency
-        self._stop_event = multiprocessing.Event()
+        self._stop_event = multiprocessing.get_context("spawn").Event()
         self._verbose = verbose
 
     def run(self):

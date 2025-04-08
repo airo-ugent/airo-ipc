@@ -107,7 +107,7 @@ class WebcamSubscriber(Node):
 
 
 if __name__ == '__main__':
-    initialize_ipc()
+    # initialize_ipc()
 
     logger.info("Creating publisher.")
     publisher = WebcamPublisher(20, True)
