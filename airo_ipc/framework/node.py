@@ -102,9 +102,8 @@ class Node(SpawnProcess, ABC):
 
     def _publish(self, topic_name: str, value: Any):
         if topic_name not in self._writers:
-            if self._verbose:
-                logger.error(f"Node {self.__class__.__name__} does not have a writer for topic {topic_name}. Ignoring.")
-            return
+            logger.error(f"Node {self.__class__.__name__} does not have a writer for topic {topic_name}.")
+            raise RuntimeError(f"Cannot publish topics that were not registered. Violating topic: {topic_name}.")
 
         self._writers[topic_name](value)
 
