@@ -8,10 +8,10 @@ resolution-markers = [
 
 [[package]]
 name = "airo-ipc"
-version = "0.0.1"
+version = "0.0.3"
 source = { editable = "." }
 dependencies = [
-    { name = "cyclonedds" },
+    { name = "cyclonedds-nightly" },
     { name = "loguru" },
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
@@ -19,7 +19,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cyclonedds", specifier = ">=0.10.5" },
+    { name = "cyclonedds-nightly", specifier = ">=2025.6.6" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "numpy" },
 ]
@@ -28,12 +28,30 @@ requires-dist = [
 name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.10'",
+]
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "python_full_version < '3.10' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/2e/0090cbf739cee7d23781ad4b89a9894a41538e4fcf4c31dcdd705b78eb8b/click-8.1.8.tar.gz", hash = "sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a", size = 226593 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/d4/7ebdbd03970677812aac39c869717059dbb71a4cfc033ca6e5221787892c/click-8.1.8-py3-none-any.whl", hash = "sha256:63c132bbbed01578a06712a2d1f497bb62d9c1c0d329b7903a866228027263b2", size = 98188 },
+]
+
+[[package]]
+name = "click"
+version = "8.2.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.10'",
+]
+dependencies = [
+    { name = "colorama", marker = "python_full_version >= '3.10' and sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/6c/8ca2efa64cf75a977a0d7fac081354553ebe483345c734fb6b6515d96bbc/click-8.2.1.tar.gz", hash = "sha256:27c491cc05d968d271d5a1db13e3b5a184636d9d930f148c50b038f0d0646202", size = 286342 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/32/10bb5764d90a8eee674e9dc6f4db6a0ab47c8c4d0d83c27f7c39ac415a4d/click-8.2.1-py3-none-any.whl", hash = "sha256:61a3265b914e850b85317d0b3109c7f8cd35a670f963866005d6ef1d5175a12b", size = 102215 },
 ]
 
 [[package]]
@@ -46,24 +64,34 @@ wheels = [
 ]
 
 [[package]]
-name = "cyclonedds"
-version = "0.10.5"
+name = "cyclonedds-nightly"
+version = "2025.6.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "rich-click" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/cf/28eb9c823dfc245c540f5286d71b44aeee2a51021fc85b25bb9562be78cc/cyclonedds-0.10.5.tar.gz", hash = "sha256:63fc4d6fdb2fd35181c40f4e90757149f2def5f570ef19fb71edc4f568755f8a", size = 156919 }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/9b/0643877aa1d4f0db85f6e6d1941cbad49143d426050945a628dea1198838/cyclonedds_nightly-2025.6.6.tar.gz", hash = "sha256:95347627b01e0fbcfdcf47228c956e8843b4f4570b34b1579b19475648e7e579", size = 187472 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/c3/69ba063a51c06ba24fa4fd463157d4cc2bc54ab1a2ab8ebdf88e8f3dde25/cyclonedds-0.10.5-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:03644e406d0c1cac45887b378d35054a0033c48f2e29d9aab3bfc1ee6c4b9aa6", size = 864591 },
-    { url = "https://files.pythonhosted.org/packages/cf/98/08508aff65c87bcef473e23a51506a100fb35bf70450c40eb227a576a018/cyclonedds-0.10.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:4a0d9fa8747827dc9bd678d73ed6f12b0ab9853b2cb7ebadbf3d8d89625f0e34", size = 799626 },
-    { url = "https://files.pythonhosted.org/packages/99/0d/02da52ffd27b92b85b64997cc449106479456648da17aa44a09124e8ebe5/cyclonedds-0.10.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:861d2ffd9513126d6a62ad9f842e85122518a7db1fb0a11d6e4fa86e3cacf61c", size = 6631487 },
-    { url = "https://files.pythonhosted.org/packages/e4/2b/d8fff5008c2c62882c2ffc185bdb0d4d1c9caf7bc5aaaef77bd9739bdc12/cyclonedds-0.10.5-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:8276b2bc347540e3ca892adf976421dbce4c6d2672934a32409db121a1431b86", size = 6653044 },
-    { url = "https://files.pythonhosted.org/packages/07/ab/acaa119f552019bdb2b06478553cf712967672f5970be80ecc9b4ca805f4/cyclonedds-0.10.5-cp310-cp310-win_amd64.whl", hash = "sha256:103a681e9490229f12c151a125e00c4db8fdb344c8e12e35ee515cd9d5d1ecd7", size = 1200672 },
-    { url = "https://files.pythonhosted.org/packages/56/e5/5969c8b4d40961fedfc93169a91e291835c006cfd8d876c8659edaa89da5/cyclonedds-0.10.5-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:e491724e91c0129a980aa898aff6438a3ebbabc45e814da948aa6d98c248dc90", size = 864564 },
-    { url = "https://files.pythonhosted.org/packages/72/86/aad7e6c6fc2ebed128a97aa10503ee4c91e5d2960dcf8e3b0359f2803778/cyclonedds-0.10.5-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:f46b444f15dc9791ee784b2d815dbf78c88b72fc16c0f94d4ce9aa25572b66fc", size = 799643 },
-    { url = "https://files.pythonhosted.org/packages/1e/60/27151865031ee5432c52e86e0289502c7d392a3d6ee2e639d1281a5072ed/cyclonedds-0.10.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:87e9d31ae7f4b1f64d7e3cef93e2b094e457c42d4541235d997afc5f2049e925", size = 6631241 },
-    { url = "https://files.pythonhosted.org/packages/4e/e6/d18bfb1d4dba909e6a71ea07d030bdcba53c4698e2481f07a0947b86e9c9/cyclonedds-0.10.5-cp39-cp39-musllinux_1_1_x86_64.whl", hash = "sha256:5cdbfa0f51bf78981bc13a1b45043c0aeb836f0ae24e9731b5f20f80ecc28ec9", size = 6652869 },
-    { url = "https://files.pythonhosted.org/packages/b8/ed/6f94e436a7a99998ffd898320b20d24f7d372375c912573c319083838614/cyclonedds-0.10.5-cp39-cp39-win_amd64.whl", hash = "sha256:6dc5ccd2c3b2fbb45375c4a50e0fc8c9334fe72c5f2ba6237a5fd411303617f6", size = 1200661 },
+    { url = "https://files.pythonhosted.org/packages/04/73/2b34dedb9963fff499e99eccbe296d3b6bbc93c2da50639e7cd2317129c4/cyclonedds_nightly-2025.6.6-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:59bff73c8d9db0c8ff11494e7821657e99a80575e7b95d92135a302046cf4db0", size = 906282 },
+    { url = "https://files.pythonhosted.org/packages/7d/7f/766bbc6a8ac39230f8e988e06d1655ce1c93f3257197ebfa4a7ec9605363/cyclonedds_nightly-2025.6.6-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:abd89d69cc23a962ee9a376748f12a55ab99141fa35e089429bae72b5c1a0cfc", size = 835041 },
+    { url = "https://files.pythonhosted.org/packages/cf/f5/027f3d15926e9ec4e0ae1334602b367ea75c0f38b1c76c68b0699b3580d1/cyclonedds_nightly-2025.6.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:85e479d85b7c72d614a0e0e3b12815ff74a28052dcd9d5ede7a152a167f567f8", size = 7481061 },
+    { url = "https://files.pythonhosted.org/packages/9d/94/be261a624df14073e4db344efe46d0b0eac4466e7bdb4e1995c437df4555/cyclonedds_nightly-2025.6.6-cp310-cp310-win_amd64.whl", hash = "sha256:f2c3f3e513ebcf028ef401fbbe879f33677e6c5ff8bbee5de380aec0187fa931", size = 1313820 },
+    { url = "https://files.pythonhosted.org/packages/fa/0b/67ee84b722361b3a10a84f964467889263877168b6384ed961759ac09b0f/cyclonedds_nightly-2025.6.6-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a4e00b755333bdd5b9f560b2c5df046b79a2c347b8bba923ab5abddf8af15455", size = 906292 },
+    { url = "https://files.pythonhosted.org/packages/25/29/96dc35a56cddc16cfce48a5ba543bd969a4722451052af73eb27d49eb39a/cyclonedds_nightly-2025.6.6-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:1360d21ec08f8c0bd5385b3009e16b5d7006d919ca417448dceab3c22e3c3212", size = 835042 },
+    { url = "https://files.pythonhosted.org/packages/76/a6/18f1ee5debadf80c28190a36677086bac90329eeda1c865365b6f9faf0b9/cyclonedds_nightly-2025.6.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aadc0f98985c1c237025b9aeb94597064d6990ff3c79475427a43625900d9383", size = 7481916 },
+    { url = "https://files.pythonhosted.org/packages/be/17/c49a6e357196ad80d72ab892d830602045473227c20c55c77a24bc977c13/cyclonedds_nightly-2025.6.6-cp311-cp311-win_amd64.whl", hash = "sha256:6f114eacb440a7fae791af28c515f40753981f30b09c57680f434bb761f65242", size = 1313826 },
+    { url = "https://files.pythonhosted.org/packages/62/3c/7098d13767ce162ee0da28555c45ca6b980e34f3f4df89dc40890845f04e/cyclonedds_nightly-2025.6.6-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:a41225711670b0866649e4dbca43c94f9c745bab9a1b38169d55e4df56c640f2", size = 905618 },
+    { url = "https://files.pythonhosted.org/packages/ec/b2/9d8633c6d85786b90e53cf2b4081912ac178b8f77ea45eb83a19540f2884/cyclonedds_nightly-2025.6.6-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:6559700952c0b72339423f08a57041e0ee5b9556b2f2542cede0425cceeb8da2", size = 834957 },
+    { url = "https://files.pythonhosted.org/packages/cc/76/96546e407d2384053034fe601bc331f2fb4fdbb2f9e5f8d4af2ad54e26c9/cyclonedds_nightly-2025.6.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:80e8a7e1f7411e4cbbfa109cdfe5cd8f55652f0189bf2ab5193a95b8bc48a275", size = 7483509 },
+    { url = "https://files.pythonhosted.org/packages/60/2d/19e71f01c9a784f538ca425c0052f774b3e664c00db0a9b4e85e540f549f/cyclonedds_nightly-2025.6.6-cp312-cp312-win_amd64.whl", hash = "sha256:a4dc918c83795a7108afe71232025a082bce718ecb8b2a4a6a18a8f96dd0a5b1", size = 1313970 },
+    { url = "https://files.pythonhosted.org/packages/30/6d/ddea8283c9834722d1a8e6ac0a12a4d91a290ecc4d67d3706a853db53b02/cyclonedds_nightly-2025.6.6-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:aad86c03773ce4b18144ef0ebe461637847f03d7751e5d258516fa956bc5d8b3", size = 905589 },
+    { url = "https://files.pythonhosted.org/packages/2c/ae/ddaec620a62b72ee3acc378a78d72c388c2e2d835b20139dc002a11e072f/cyclonedds_nightly-2025.6.6-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:39a710ea07386ed7fa89d9494ead4ad135c44a5ba36039b4b012ac26214a81de", size = 834921 },
+    { url = "https://files.pythonhosted.org/packages/86/06/b35a795a0de02963aad2d7e321a1a25cf73920168fb185cf43df8857275c/cyclonedds_nightly-2025.6.6-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4d64ee688f01065bba4cd152ccd12913028c47b51558b8e2aaf7bd50c19440c2", size = 7483479 },
+    { url = "https://files.pythonhosted.org/packages/f4/b9/4ee0be08183dbe333b3984b2ea3dd6bba42ffcb85c6f48eb54da12e6e3e1/cyclonedds_nightly-2025.6.6-cp313-cp313-win_amd64.whl", hash = "sha256:743c9f2b9c8be2f0478cf338daa1b0bb09c5d820b5e9a3b15d0747385e57cca5", size = 1313970 },
+    { url = "https://files.pythonhosted.org/packages/a9/a1/5dcd42654a85c190415876004523d0420d742fe86fc46259c53b611e9000/cyclonedds_nightly-2025.6.6-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:e4da5f43a80b7646c8842194e38a626c8b54c081ce95243e921893fb65e7b010", size = 906296 },
+    { url = "https://files.pythonhosted.org/packages/27/8e/7fd338e1ce494bde9e122865511fe6879602973cfaf10663aa1867c3715a/cyclonedds_nightly-2025.6.6-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:eb01cfb4b098df38adf8aa037f294312c1cf1e104d475949e635dd4bab232265", size = 835029 },
+    { url = "https://files.pythonhosted.org/packages/99/87/09f328ebeba782645f791ba2d0d09b19aa39bcbdec404088c1031c2f1494/cyclonedds_nightly-2025.6.6-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:665e93f2e2017ea9e1bdc55b735debc4725c24200537d36fbb29a887e6d235cc", size = 7480864 },
+    { url = "https://files.pythonhosted.org/packages/a4/b7/848ee748a07a11226a4d95bf79278b2fb3e258f11a51aee34f4bb4fbfa2f/cyclonedds_nightly-2025.6.6-cp39-cp39-win_amd64.whl", hash = "sha256:8cf86d6bc729c6f2a104a81961f3807cf58dcde8f804ddcfc1e17bd9d2374758", size = 1314545 },
 ]
 
 [[package]]
@@ -222,48 +250,49 @@ wheels = [
 
 [[package]]
 name = "pygments"
-version = "2.19.1"
+version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7c/2d/c3338d48ea6cc0feb8446d8e6937e1408088a72a39937982cc6111d17f84/pygments-2.19.1.tar.gz", hash = "sha256:61c16d2a8576dc0649d9f39e089b5f02bcd27fba10d8fb4dcc28173f7a45151f", size = 4968581 }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/0b/9fcc47d19c48b59121088dd6da2488a49d5f72dacf8262e2790a1d2c7d15/pygments-2.19.1-py3-none-any.whl", hash = "sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c", size = 1225293 },
+    { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217 },
 ]
 
 [[package]]
 name = "rich"
-version = "13.9.4"
+version = "14.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markdown-it-py" },
     { name = "pygments" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/3a/0316b28d0761c6734d6bc14e770d85506c986c85ffb239e688eeaab2c2bc/rich-13.9.4.tar.gz", hash = "sha256:439594978a49a09530cff7ebc4b5c7103ef57baf48d5ea3184f21d9a2befa098", size = 223149 }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/53/830aa4c3066a8ab0ae9a9955976fb770fe9c6102117c8ec4ab3ea62d89e8/rich-14.0.0.tar.gz", hash = "sha256:82f1bc23a6a21ebca4ae0c45af9bdbc492ed20231dcb63f297d6d1021a9d5725", size = 224078 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/71/39c7c0d87f8d4e6c020a393182060eaefeeae6c01dab6a84ec346f2567df/rich-13.9.4-py3-none-any.whl", hash = "sha256:6049d5e6ec054bf2779ab3358186963bac2ea89175919d699e378b99738c2a90", size = 242424 },
+    { url = "https://files.pythonhosted.org/packages/0d/9b/63f4c7ebc259242c89b3acafdb37b41d1185c07ff0011164674e9076b491/rich-14.0.0-py3-none-any.whl", hash = "sha256:1c9491e1951aac09caffd42f448ee3d04e58923ffe14993f6e83068dc395d7e0", size = 243229 },
 ]
 
 [[package]]
 name = "rich-click"
-version = "1.8.8"
+version = "1.8.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
+    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/7a/4b78c5997f2a799a8c5c07f3b2145bbcda40115c4d35c76fbadd418a3c89/rich_click-1.8.8.tar.gz", hash = "sha256:547c618dea916620af05d4a6456da797fbde904c97901f44d2f32f89d85d6c84", size = 39066 }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/a8/dcc0a8ec9e91d76ecad9413a84b6d3a3310c6111cfe012d75ed385c78d96/rich_click-1.8.9.tar.gz", hash = "sha256:fd98c0ab9ddc1cf9c0b7463f68daf28b4d0033a74214ceb02f761b3ff2af3136", size = 39378 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/69/963f0bf44a654f6465bdb66fb5a91051b0d7af9f742b5bd7202607165036/rich_click-1.8.8-py3-none-any.whl", hash = "sha256:205aabd5a98e64ab2c105dee9e368be27480ba004c7dfa2accd0ed44f9f1550e", size = 35747 },
+    { url = "https://files.pythonhosted.org/packages/b6/c2/9fce4c8a9587c4e90500114d742fe8ef0fd92d7bad29d136bb9941add271/rich_click-1.8.9-py3-none-any.whl", hash = "sha256:c3fa81ed8a671a10de65a9e20abf642cfdac6fdb882db1ef465ee33919fbcfe2", size = 36082 },
 ]
 
 [[package]]
 name = "typing-extensions"
-version = "4.13.0"
+version = "4.14.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0e/3e/b00a62db91a83fff600de219b6ea9908e6918664899a2d85db222f4fbf19/typing_extensions-4.13.0.tar.gz", hash = "sha256:0a4ac55a5820789d87e297727d229866c9650f6521b64206413c4fbada24d95b", size = 106520 }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/bc/51647cd02527e87d05cb083ccc402f93e441606ff1f01739a62c8ad09ba5/typing_extensions-4.14.0.tar.gz", hash = "sha256:8676b788e32f02ab42d9e7c61324048ae4c6d844a399eebace3d4979d75ceef4", size = 107423 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/86/39b65d676ec5732de17b7e3c476e45bb80ec64eb50737a8dce1a4178aba1/typing_extensions-4.13.0-py3-none-any.whl", hash = "sha256:c8dd92cc0d6425a97c18fbb9d1954e5ff92c1ca881a309c45f06ebc0b79058e5", size = 45683 },
+    { url = "https://files.pythonhosted.org/packages/69/e0/552843e0d356fbb5256d21449fa957fa4eff3bbc135a74a691ee70c7c5da/typing_extensions-4.14.0-py3-none-any.whl", hash = "sha256:a1514509136dd0b477638fc68d6a91497af5076466ad0fa6c338e44e359944af", size = 43839 },
 ]
 
 [[package]]
