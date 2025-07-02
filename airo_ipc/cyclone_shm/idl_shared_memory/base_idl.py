@@ -6,10 +6,13 @@ Classes:
 """
 
 from dataclasses import dataclass, fields
+from warnings import deprecated
+
 import numpy as np
 
+
 @dataclass
-class BaseIDL:
+class BaseIdl:
     """
     Base class for buffer templates using dataclasses.
 
@@ -35,3 +38,7 @@ class BaseIDL:
             else:
                 raise AttributeError(f"BaseIDL subclasses only support NumPy types: {field.name} violates this.")
 
+
+@deprecated("Use BaseIdl instead.")
+class BaseIDL(BaseIdl):
+    """Present for backwards compatibility, use BaseIdl instead."""

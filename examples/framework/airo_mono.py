@@ -20,7 +20,7 @@ from cyclonedds.domain import DomainParticipant
 from cyclonedds.idl import IdlStruct
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
+from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
 from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
 from airo_ipc.framework.framework import IpcKind
@@ -38,7 +38,7 @@ class ResolutionIdl(IdlStruct):
 
 
 @dataclass
-class WebcamFrame(BaseIDL):
+class WebcamFrame(BaseIdl):
     """We will send the RGB frames over shared memory: we need to derive from BaseIDL."""
     rgb: np.ndarray
     intrinsics: np.ndarray

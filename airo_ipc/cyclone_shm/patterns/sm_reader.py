@@ -16,7 +16,7 @@ from cyclonedds.domain import DomainParticipant
 from loguru import logger
 
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
+from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
 
 
@@ -94,7 +94,7 @@ class SMReader:
             self,
             domain_participant: DomainParticipant,
             topic_name: str,
-            idl_dataclass: BaseIDL,
+            idl_dataclass: BaseIdl,
             nr_of_buffers: int = 2,
     ):
         """
@@ -103,7 +103,7 @@ class SMReader:
         Args:
             domain_participant (DomainParticipant): The DDS domain participant.
             topic_name (str): The base name of the topic.
-            idl_dataclass (BaseIDL): The template defining the buffer structure.
+            idl_dataclass (BaseIdl): The template defining the buffer structure.
             nr_of_buffers (int): The number of shared memory buffers per field.
         """
         self.domain_participant = domain_participant

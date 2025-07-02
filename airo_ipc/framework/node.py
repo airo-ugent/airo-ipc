@@ -8,7 +8,7 @@ from cyclonedds.domain import DomainParticipant
 from cyclonedds.idl import IdlMeta
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
+from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
 from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
@@ -61,7 +61,7 @@ class Node(SpawnProcess, ABC):
 
         self._setup()
 
-    def _subscribe(self, topic_name: str, idl_dataclass: Union[IdlMeta, BaseIDL], ipc_kind: IpcKind,
+    def _subscribe(self, topic_name: str, idl_dataclass: Union[IdlMeta, BaseIdl], ipc_kind: IpcKind,
                    callback: Callable):
         if topic_name in self._readers:
             if self._verbose:
@@ -86,7 +86,7 @@ class Node(SpawnProcess, ABC):
             if value is not None:
                 self._callbacks[topic_name](value)
 
-    def _register_publisher(self, topic_name: str, idl_dataclass: Union[IdlMeta, BaseIDL], ipc_kind: IpcKind):
+    def _register_publisher(self, topic_name: str, idl_dataclass: Union[IdlMeta, BaseIdl], ipc_kind: IpcKind):
         if topic_name in self._writers:
             if self._verbose:
                 logger.warning(

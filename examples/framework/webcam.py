@@ -11,7 +11,7 @@ import numpy as np
 from cyclonedds.idl import IdlStruct
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
+from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.framework.framework import IpcKind
 from airo_ipc.framework.node import Node
 
@@ -27,7 +27,7 @@ class ResolutionIdl(IdlStruct):
 
 
 @dataclass
-class WebcamFrame(BaseIDL):
+class WebcamFrame(BaseIdl):
     """We will send the BGR frames over shared memory: we need to derive from BaseIDL."""
     bgr: np.ndarray
 

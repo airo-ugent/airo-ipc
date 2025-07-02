@@ -15,7 +15,7 @@ import numpy as np
 from cyclonedds.domain import DomainParticipant
 
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIDL
+from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
 from airo_ipc.cyclone_shm.patterns.sm_reader import SharedMemoryNoResourceTracker
 
@@ -72,7 +72,7 @@ class SMWriter:
             self,
             domain_participant: DomainParticipant,
             topic_name: str,
-            idl_dataclass: BaseIDL,
+            idl_dataclass: BaseIdl,
             nr_of_buffers: int = 2,
     ):
         """
@@ -81,7 +81,7 @@ class SMWriter:
         Args:
             domain_participant (DomainParticipant): The DDS domain participant.
             topic_name (str): The base name of the topic.
-            idl_dataclass (BaseIDL): The template defining the buffer structure.
+            idl_dataclass (BaseIdl): The template defining the buffer structure.
             nr_of_buffers (int): The number of shared memory buffers per field.
         """
         self.domain_participant = domain_participant
@@ -100,12 +100,12 @@ class SMWriter:
         self.buffers: List[Dict[str, SMBufferWriteField]] = self.__make_shared_memory()
         self.buffer_idx = 0
 
-    def __call__(self, msg: BaseIDL):
+    def __call__(self, msg: BaseIdl):
         """
         Write data to shared memory and publish buffer number via DDS.
 
         Args:
-            msg (BaseIDL): The data to write to shared memory.
+            msg (BaseIdl): The data to write to shared memory.
         """
         # Rotate to the next buffer index
         self.buffer_idx = (self.buffer_idx + 1) % self.nr_of_buffers
