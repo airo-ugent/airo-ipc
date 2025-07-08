@@ -26,6 +26,12 @@ Please refer to the README file in `airo_ipc/cyclone_shm` for more information o
 You can install the `airo-ipc` package by running:
 
 ```bash
+pip install airo-ipc
+```
+
+or directly from git:
+
+```bash
 pip install git+https://github.com/airo-ugent/airo-ipc
 ```
 
