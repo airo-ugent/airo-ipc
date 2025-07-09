@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "airo-ipc"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cyclonedds-nightly" },
@@ -19,7 +19,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cyclonedds-nightly", specifier = ">=2025.6.6" },
+    { name = "cyclonedds-nightly", specifier = "==2025.6.6" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "numpy" },
 ]
