@@ -10,6 +10,7 @@ Classes:
 import atexit
 import time
 from multiprocessing import shared_memory, resource_tracker
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from cyclonedds.domain import DomainParticipant
@@ -32,7 +33,7 @@ class SharedMemoryNoResourceTracker:
     when the process exits, which is useful when multiple processes need to share the memory.
     """
 
-    def __init__(self, name):
+    def __init__(self, name: str) -> None:
         """
         Initialize the shared memory segment.
 
@@ -43,12 +44,12 @@ class SharedMemoryNoResourceTracker:
         # Unregister from resource_tracker to prevent automatic unlinking
         resource_tracker.unregister("/" + self.shm.name, "shared_memory")
 
-    def close(self):
+    def close(self) -> None:
         """Close the shared memory segment."""
         self.shm.close()
 
     @property
-    def buf(self):
+    def buf(self) -> Union[memoryview[int], None]:
         """Return the buffer interface to the shared memory."""
         return self.shm.buf
 
@@ -61,7 +62,7 @@ class SMBufferReadField:
     that uses the shared memory as its buffer.
     """
 
-    def __init__(self, name, shape, dtype):
+    def __init__(self, name: str, shape: Tuple[int, ...], dtype: Any):
         """
         Initialize the shared memory buffer field.
 
@@ -71,12 +72,14 @@ class SMBufferReadField:
             dtype (numpy.dtype): The data type of the numpy array.
         """
         self.shm = SharedMemoryNoResourceTracker(name=name)
-        self.shared_array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
+        self.shared_array: np.ndarray = np.ndarray(
+            shape, dtype=dtype, buffer=self.shm.buf
+        )
 
         # Ensure the shared memory is properly closed when the program exits
         atexit.register(self.stop)
 
-    def stop(self):
+    def stop(self) -> None:
         """Close the shared memory segment."""
         self.shm.close()
 
@@ -91,11 +94,11 @@ class SMReader:
     """
 
     def __init__(
-            self,
-            domain_participant: DomainParticipant,
-            topic_name: str,
-            idl_dataclass: BaseIdl,
-            nr_of_buffers: int = 2,
+        self,
+        domain_participant: DomainParticipant,
+        topic_name: str,
+        idl_dataclass: BaseIdl,
+        nr_of_buffers: int = 2,
     ):
         """
         Initialize the shared memory reader.
@@ -123,7 +126,7 @@ class SMReader:
         # Load the shared memory buffers
         self.buffers = self.__load_shared_memory()
 
-    def __call__(self):
+    def __call__(self) -> BaseIdl:
         """
         Read the latest data from shared memory.
 
@@ -144,7 +147,7 @@ class SMReader:
 
         return self.buffer_template.__class__(**kwargs)
 
-    def __load_shared_memory(self):
+    def __load_shared_memory(self) -> List[Dict[str, SMBufferReadField]]:
         """
         Load shared memory buffers based on the buffer template.
 
@@ -152,7 +155,9 @@ class SMReader:
             list: A list of dictionaries, each containing buffer fields.
         """
         # Initialize a list to hold buffers for each buffer index
-        buffers = [{} for _ in range(self.nr_of_buffers)]
+        buffers: List[Dict[str, SMBufferReadField]] = [
+            {} for _ in range(self.nr_of_buffers)
+        ]
 
         # Iterate over each field defined in the buffer template
         for name, shape, dtype, nbytes in self.buffer_template.get_fields():
@@ -165,7 +170,9 @@ class SMReader:
                 )
         return buffers
 
-    def __wait_for_writer(self, timeout=None, warn_every=60):
+    def __wait_for_writer(
+        self, timeout: Optional[float] = None, warn_every: int = 60
+    ) -> None:
         """
         Wait for the DDS writer to start publishing buffer numbers.
 
@@ -179,7 +186,7 @@ class SMReader:
         t0 = time.time()
         warned = 0
         while self.buffer_nr_reader() is None and (
-                timeout is None or (time.time() - t0) < timeout
+            timeout is None or (time.time() - t0) < timeout
         ):
             if warn_every * (warned + 1) < (time.time() - t0):
                 warned += 1
@@ -191,7 +198,7 @@ class SMReader:
                     f"{warned * warn_every} seconds. "
                 )
                 if timeout is None:
-                    warning_msg += f"No timeout defined; will wait indefinitely."
+                    warning_msg += "No timeout defined; will wait indefinitely."
                 else:
                     warning_msg += (
                         f"Timeout: {timeout} seconds. Will wait for "
@@ -206,6 +213,5 @@ class SMReader:
         if self.buffer_nr_reader() is None:
             # If the writer has not started within the timeout, raise an error
             raise RuntimeError(
-                f"Shared Memory Reader {self.topic_name} timed out "
-                f"waiting for buffer."
+                f"Shared Memory Reader {self.topic_name} timed out waiting for buffer."
             )

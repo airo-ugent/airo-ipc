@@ -13,8 +13,8 @@ class DDSWriter:
         topic_name: str,
         idl_dataclass: IdlMeta,
     ):
-        self.topic = Topic(domain_participant, topic_name, idl_dataclass)
+        self.topic: Topic = Topic(domain_participant, topic_name, idl_dataclass)
         self.writer = DataWriter(domain_participant, self.topic, CYCLONE_DEFAULTS.QOS)
 
-    def __call__(self, msg: IdlStruct):
+    def __call__(self, msg: IdlStruct) -> None:
         self.writer.write(msg)

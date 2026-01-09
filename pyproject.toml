@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airo-ipc"
-version = "0.1.1"
+version = "0.1.2"
 authors = [
     { name = "Matthijs Biondina", email = "matthijs.biondina@ugent.be" },
     { name = "Mathieu De Coster", email = "mathieu.decoster@ugent.be" },
@@ -30,3 +30,8 @@ Issues = "https://github.com/airo-ugent/airo-ipc/issues"
 
 [tools.setuptools]
 packages = ["airo_ipc"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+]

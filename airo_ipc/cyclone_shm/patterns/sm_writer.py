@@ -8,8 +8,8 @@ Classes:
 
 import atexit
 import time
-from multiprocessing import shared_memory, resource_tracker
-from typing import Dict, List
+from multiprocessing import shared_memory
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from cyclonedds.domain import DomainParticipant
@@ -17,7 +17,7 @@ from cyclonedds.domain import DomainParticipant
 from airo_ipc.cyclone_shm.idl.defaults.buffer_nr import BufferNrSample
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
-from airo_ipc.cyclone_shm.patterns.sm_reader import SharedMemoryNoResourceTracker
+
 
 class SMBufferWriteField:
     """
@@ -27,7 +27,7 @@ class SMBufferWriteField:
     that uses the shared memory as its buffer for writing data.
     """
 
-    def __init__(self, name, shape, dtype, nbytes):
+    def __init__(self, name: str, shape: Tuple[int, ...], dtype: Any, nbytes: int):
         """
         Initialize the shared memory buffer field.
 
@@ -49,12 +49,14 @@ class SMBufferWriteField:
             self.shm = shared_memory.SharedMemory(create=True, size=nbytes, name=name)
         # Create a new shared memory block with the given name and size
         # Create a numpy array that uses the shared memory buffer
-        self.shared_array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
+        self.shared_array: np.ndarray = np.ndarray(
+            shape, dtype=dtype, buffer=self.shm.buf
+        )
 
         # Ensure the shared memory is properly cleaned up when the program exits
         atexit.register(self.stop)
 
-    def stop(self):
+    def stop(self) -> None:
         """Close and unlink the shared memory segment."""
         self.shm.close()
         self.shm.unlink()
@@ -69,11 +71,11 @@ class SMWriter:
     """
 
     def __init__(
-            self,
-            domain_participant: DomainParticipant,
-            topic_name: str,
-            idl_dataclass: BaseIdl,
-            nr_of_buffers: int = 2,
+        self,
+        domain_participant: DomainParticipant,
+        topic_name: str,
+        idl_dataclass: BaseIdl,
+        nr_of_buffers: int = 2,
     ):
         """
         Initialize the shared memory writer.
@@ -100,7 +102,7 @@ class SMWriter:
         self.buffers: List[Dict[str, SMBufferWriteField]] = self.__make_shared_memory()
         self.buffer_idx = 0
 
-    def __call__(self, msg: BaseIdl):
+    def __call__(self, msg: BaseIdl) -> None:
         """
         Write data to shared memory and publish buffer number via DDS.
 
@@ -119,7 +121,7 @@ class SMWriter:
         # Publish the buffer number and timestamp via DDS
         self.buffer_nr_writer(BufferNrSample(timestamp=time.time(), nr=self.buffer_idx))
 
-    def __make_shared_memory(self):
+    def __make_shared_memory(self) -> List[Dict[str, SMBufferWriteField]]:
         """
         Create shared memory buffers based on the buffer template.
 
@@ -127,7 +129,9 @@ class SMWriter:
             List[Dict[str, SMBufferWriteField]]: A list of dictionaries, each containing buffer fields.
         """
         # Initialize a list to hold buffers for each buffer index
-        buffers = [{} for _ in range(self.nr_of_buffers)]
+        buffers: List[Dict[str, SMBufferWriteField]] = [
+            {} for _ in range(self.nr_of_buffers)
+        ]
 
         # Iterate over each field defined in the buffer template
         for name, shape, dtype, nbytes in self.buffer_template.get_fields():
