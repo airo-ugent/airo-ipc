@@ -6,7 +6,7 @@ Classes:
 """
 
 from dataclasses import dataclass, fields
-from typing import Any, Generator, Tuple
+from typing import Any, Generator, Iterator, Tuple
 from typing_extensions import deprecated
 
 import numpy as np
@@ -21,7 +21,7 @@ class BaseIdl:
     which is useful for setting up shared memory buffers for inter-process communication.
     """
 
-    def get_fields(self) -> Generator[Tuple[str, Tuple[int, ...], Any, int]]:
+    def get_fields(self) -> Iterator[Tuple[str, Tuple[int, ...], Any, int]]:
         """
         Generator that yields information about the numpy array fields.
 
