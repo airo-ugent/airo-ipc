@@ -129,6 +129,8 @@ class SMReader:
     def __call__(self) -> BaseIdl:
         """
         Read the latest data from shared memory.
+        No copy is made; the returned instance references the shared memory directly.
+        You should copy the data immediately if you need to retain it.
 
         Returns:
             An instance of buffer_template.__class__ containing the data.
@@ -146,6 +148,30 @@ class SMReader:
             kwargs[key] = bufferfield.shared_array
 
         return self.buffer_template.__class__(**kwargs)
+
+    def read_into(self, output_instance: BaseIdl) -> None:
+        """
+        Read the latest data from shared memory into the provided instance.
+        This avoids allocating a new instance of the buffer template class,
+        which can be a minor performance improvement in very high-frequency scenarios
+        and reduce pressure on the garbage collector.
+
+        No copy is made; the returned instance references the shared memory directly.
+        You should copy the data immediately if you need to retain it.
+
+        Args:
+            output_instance (BaseIdl): An instance of the buffer template class to populate.
+        
+        Raises:
+            WaitingForFirstMessageException: If no data is available yet.
+        """
+        buffer_nr_sample = self.buffer_nr_reader()
+        if buffer_nr_sample is None:
+            raise WaitingForFirstMessageException
+        buffer = self.buffers[buffer_nr_sample.nr]
+
+        for key, bufferfield in buffer.items():
+            setattr(output_instance, key, bufferfield.shared_array)
 
     def __load_shared_memory(self) -> List[Dict[str, SMBufferReadField]]:
         """
