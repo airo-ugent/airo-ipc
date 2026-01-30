@@ -75,7 +75,7 @@ class SMWriter:
         domain_participant: DomainParticipant,
         topic_name: str,
         idl_dataclass: BaseIdl,
-        nr_of_buffers: int = 2,
+        nr_of_buffers: int = 3,
     ):
         """
         Initialize the shared memory writer.
@@ -84,7 +84,7 @@ class SMWriter:
             domain_participant (DomainParticipant): The DDS domain participant.
             topic_name (str): The base name of the topic.
             idl_dataclass (BaseIdl): The template defining the buffer structure.
-            nr_of_buffers (int): The number of shared memory buffers per field.
+            nr_of_buffers (int): The number of shared memory buffers per field. Raise this value to lower the chance of data races. Lower values reduce memory usage at the risk of data races. This value should be synchronized between writers and readers.
         """
         self.domain_participant = domain_participant
         self.topic_name = topic_name
