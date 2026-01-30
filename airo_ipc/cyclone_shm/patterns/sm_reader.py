@@ -161,7 +161,7 @@ class SMReader:
 
         Args:
             output_instance (BaseIdl): An instance of the buffer template class to populate.
-        
+
         Raises:
             WaitingForFirstMessageException: If no data is available yet.
         """
