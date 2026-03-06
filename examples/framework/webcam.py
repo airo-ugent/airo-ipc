@@ -3,38 +3,35 @@ Another process, started from this same script, subscribes to the images and sho
 
 This script requires that you have OpenCV installed, you can do this with: `pip install opencv-contrib-python`.
 """
-from dataclasses import dataclass
+import ctypes
 from typing import Final
 
 import cv2
 import numpy as np
-from cyclonedds.idl import IdlStruct
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
-from airo_ipc.framework.framework import IpcKind
-from airo_ipc.framework.node import Node
+from airo_ipc import Buffer, Transport, buffer_from_arrays
+from airo_ipc.framework import Node
 
 TOPIC_RESOLUTION: Final[str] = "resolution"
 TOPIC_BGR: Final[str] = "frame"
 
 
-@dataclass
-class ResolutionIdl(IdlStruct):
-    """We will send the resolution of the webcam over DDS: we need to define an IDL struct for this."""
-    width: int
-    height: int
+class Resolution(Buffer):
+    """We will send the resolution of the webcam over the network."""
+    _version_ = 1
+    _fields_ = [
+        ("width", ctypes.c_int32),
+        ("height", ctypes.c_int32),
+    ]
 
 
-@dataclass
-class WebcamFrame(BaseIdl):
-    """We will send the BGR frames over shared memory: we need to derive from BaseIDL."""
-    bgr: np.ndarray
-
-    @staticmethod
-    def with_resolution(width: int, height: int):
-        """We may not know the resolution of the webcam when we create the frame, so we need a factory method."""
-        return WebcamFrame(bgr=np.zeros((height, width, 3), dtype=np.uint8))
+def make_frame_buffer(width: int, height: int) -> type[Buffer]:
+    """Create a Buffer type for webcam frames with the given resolution."""
+    return buffer_from_arrays(
+        "WebcamFrame",
+        bgr=np.zeros((height, width, 3), dtype=np.uint8),
+    )
 
 
 class WebcamPublisher(Node):
@@ -44,26 +41,32 @@ class WebcamPublisher(Node):
         self._camera = cv2.VideoCapture(0)
 
         logger.info("Getting resolution.")
-        width, height = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH)), int(
-            self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        self._FrameBuffer = make_frame_buffer(width, height)
 
         logger.info("Registering publishers.")
-        self._register_publisher(TOPIC_RESOLUTION, ResolutionIdl, IpcKind.DDS)
-        self._register_publisher(TOPIC_BGR, WebcamFrame.with_resolution(width, height), IpcKind.SHARED_MEMORY)
+        self._register_publisher(TOPIC_RESOLUTION, Resolution, Transport.NETWORK)
+        self._register_publisher(TOPIC_BGR, self._FrameBuffer, Transport.LOCAL)
+
+        self._resolution = Resolution(width=width, height=height)
 
     def _step(self):
-        """The _step method is called in a loop by the Node superclass."""
         ret, frame = self._camera.read()
 
         if not ret:
             logger.error("Could not read frame from webcam. Stopping publisher.")
             self.stop()
+            return
 
-        self._publish(TOPIC_RESOLUTION, ResolutionIdl(width=frame.shape[1], height=frame.shape[0]))
-        self._publish(TOPIC_BGR, WebcamFrame(bgr=frame))
+        self._publish(TOPIC_RESOLUTION, self._resolution)
+
+        msg = self._FrameBuffer()
+        msg.bgr[:] = frame
+        self._publish(TOPIC_BGR, msg)
 
     def _teardown(self):
-        """This is where we can clean up resources when the publisher is stopped."""
         self._camera.release()
 
 
@@ -73,25 +76,17 @@ class WebcamSubscriber(Node):
         logger.info("Creating webcam window.")
         cv2.namedWindow("Webcam", cv2.WINDOW_NORMAL)
         logger.info("Subscribing to resolution messages.")
-        self._subscribe(TOPIC_RESOLUTION, ResolutionIdl, IpcKind.DDS, self._on_receive_resolution)
-        # We cannot yet subscribe to the BGR topic, because we do not yet know the resolution. We will do this in the
-        # resolution callback.
+        self._subscribe(TOPIC_RESOLUTION, Resolution, Transport.NETWORK, callback=self._on_receive_resolution)
 
-    def _on_receive_resolution(self, resolution: ResolutionIdl):
-        # If we already subscribed to the BGR topic, we do not need to do it again.
-        if TOPIC_BGR in self._readers:
+    def _on_receive_resolution(self, resolution: Resolution):
+        if TOPIC_BGR in self._subscribers:
             return
 
-        # It is safe to subscribe to topics in callbacks, because a copy of the existing subscriptions is made in the
-        # Node superclass.
+        FrameBuffer = make_frame_buffer(resolution.width, resolution.height)
         logger.info("Received resolution message. Subscribing to BGR messages.")
-        self._subscribe(TOPIC_BGR, WebcamFrame.with_resolution(resolution.width, resolution.height),
-                        IpcKind.SHARED_MEMORY, self._on_receive_frame)
+        self._subscribe(TOPIC_BGR, FrameBuffer, Transport.LOCAL, callback=self._on_receive_frame)
 
-    def _on_receive_frame(self, frame: WebcamFrame):
-        # Here, we show the frame in a window in the callback function. This is not ideal, because the callback function
-        # should be as fast as possible. In a real application, you could use a queue to pass the frames to another
-        # thread that shows the frames in a window.
+    def _on_receive_frame(self, frame):
         cv2.imshow("Webcam", frame.bgr)
         key = cv2.waitKey(1)
         if key == ord("q"):
@@ -102,7 +97,6 @@ class WebcamSubscriber(Node):
         pass
 
     def _teardown(self):
-        # We need to close the window when the subscriber is stopped.
         cv2.destroyAllWindows()
 
 

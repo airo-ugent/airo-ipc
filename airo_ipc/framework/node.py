@@ -2,18 +2,13 @@ import multiprocessing
 import time
 from abc import abstractmethod, ABC
 from multiprocessing.context import SpawnProcess
-from typing import Dict, Union, Callable, Any
+from typing import Any, Callable, Dict
 
-from cyclonedds.domain import DomainParticipant
-from cyclonedds.idl import IdlMeta
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
-from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
-from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
-from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
-from airo_ipc.cyclone_shm.patterns.sm_writer import SMWriter
-from airo_ipc.framework.framework import IpcKind
+from airo_ipc.api import create_publisher, create_subscriber
+from airo_ipc.buffer import Buffer
+from airo_ipc.transport import Transport
 
 
 class Node(SpawnProcess, ABC):
@@ -53,90 +48,64 @@ class Node(SpawnProcess, ABC):
 
     def _node_setup(self) -> None:
         """Handles setup that must be done inside the child process."""
-        self._cyclone_dp = DomainParticipant()
-
-        self._readers: Dict[str, Union[SMReader, DDSReader]] = dict()
+        self._subscribers: Dict[str, Any] = dict()
         self._callbacks: Dict[str, Callable] = dict()
-
-        self._writers: Dict[str, Union[SMWriter, DDSWriter]] = dict()
+        self._publishers: Dict[str, Any] = dict()
 
         self._setup()
 
     def _subscribe(
         self,
         topic_name: str,
-        idl_dataclass: Union[IdlMeta, BaseIdl],
-        ipc_kind: IpcKind,
+        buffer_type: type[Buffer],
+        transport: Transport = Transport.LOCAL,
+        *,
         callback: Callable,
     ) -> None:
-        if topic_name in self._readers:
+        if topic_name in self._subscribers:
             if self._verbose:
                 logger.warning(
                     f"Node {self.__class__.__name__} is already subscribed to topic {topic_name}. Ignoring."
                 )
             return
 
-        if ipc_kind == IpcKind.DDS:
-            assert isinstance(idl_dataclass, IdlMeta)
-            self._readers[topic_name] = DDSReader(
-                self._cyclone_dp, topic_name, idl_dataclass
-            )
-        elif ipc_kind == IpcKind.SHARED_MEMORY:
-            assert isinstance(idl_dataclass, BaseIdl)
-            self._readers[topic_name] = SMReader(
-                self._cyclone_dp, topic_name, idl_dataclass
-            )
-        else:
-            raise NotImplementedError(
-                f"No implementation available for subscribing with IPC kind {ipc_kind}."
-            )
-
+        self._subscribers[topic_name] = create_subscriber(topic_name, buffer_type, transport)
         self._callbacks[topic_name] = callback
 
     def _update_subscriptions(self) -> None:
         # When a subscription is made in a subscription callback, we should not update it in the same iteration.
         # So we take a snapshot of the items and iterate over that.
-        items = list(self._readers.items())
-        for topic_name, reader in items:
-            value = reader()
+        items = list(self._subscribers.items())
+        for topic_name, subscriber in items:
+            value = subscriber.receive()
             if value is not None:
                 self._callbacks[topic_name](value)
 
     def _register_publisher(
-        self, topic_name: str, idl_dataclass: Union[IdlMeta, BaseIdl], ipc_kind: IpcKind
+        self,
+        topic_name: str,
+        buffer_type: type[Buffer],
+        transport: Transport = Transport.LOCAL,
     ) -> None:
-        if topic_name in self._writers:
+        if topic_name in self._publishers:
             if self._verbose:
                 logger.warning(
                     f"Node {self.__class__.__name__} is already registered as a publisher for topic {topic_name}. Ignoring."
                 )
             return
 
-        if ipc_kind == IpcKind.DDS:
-            assert isinstance(idl_dataclass, IdlMeta)
-            self._writers[topic_name] = DDSWriter(
-                self._cyclone_dp, topic_name, idl_dataclass
-            )
-        elif ipc_kind == IpcKind.SHARED_MEMORY:
-            assert isinstance(idl_dataclass, BaseIdl)
-            self._writers[topic_name] = SMWriter(
-                self._cyclone_dp, topic_name, idl_dataclass
-            )
-        else:
-            raise NotImplementedError(
-                f"No implementation available for publishing with IPC kind {ipc_kind}."
-            )
+        self._publishers[topic_name] = create_publisher(topic_name, buffer_type, transport)
 
-    def _publish(self, topic_name: str, value: Any) -> None:
-        if topic_name not in self._writers:
+    def _publish(self, topic_name: str, value: Buffer) -> None:
+        if topic_name not in self._publishers:
             logger.error(
-                f"Node {self.__class__.__name__} does not have a writer for topic {topic_name}."
+                f"Node {self.__class__.__name__} does not have a publisher for topic {topic_name}."
             )
             raise RuntimeError(
                 f"Cannot publish topics that were not registered. Violating topic: {topic_name}."
             )
 
-        self._writers[topic_name](value)
+        self._publishers[topic_name].publish(value)
 
     @abstractmethod
     def _setup(self) -> None:
