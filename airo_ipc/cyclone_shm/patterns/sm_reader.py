@@ -49,7 +49,7 @@ class SharedMemoryNoResourceTracker:
         self.shm.close()
 
     @property
-    def buf(self) -> Union[memoryview[int], None]:
+    def buf(self) -> Union[memoryview, None]:
         """Return the buffer interface to the shared memory."""
         return self.shm.buf
 
