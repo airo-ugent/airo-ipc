@@ -11,7 +11,7 @@ import numpy as np
 from loguru import logger
 
 from airo_ipc import Buffer, Transport, buffer_from_arrays
-from airo_ipc.framework import Node
+from airo_ipc.framework import Worker
 
 TOPIC_RESOLUTION: Final[str] = "resolution"
 TOPIC_BGR: Final[str] = "frame"
@@ -34,7 +34,7 @@ def make_frame_buffer(width: int, height: int) -> type[Buffer]:
     )
 
 
-class WebcamPublisher(Node):
+class WebcamPublisher(Worker):
     """The publisher will open the webcam and publish the resolution and frame in a loop."""
     def _setup(self):
         logger.info("Opening webcam.")
@@ -70,7 +70,7 @@ class WebcamPublisher(Node):
         self._camera.release()
 
 
-class WebcamSubscriber(Node):
+class WebcamSubscriber(Worker):
     """The subscriber will show the frames in a window."""
     def _setup(self):
         logger.info("Creating webcam window.")

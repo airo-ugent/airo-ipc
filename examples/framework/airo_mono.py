@@ -1,13 +1,14 @@
 """This script implements the airo-camera-toolkit RGBCamera interface for a webcam using OpenCV.
 
-This script reads from the webcam with OpenCV and publishes the images to a topic over shared memory.
-Another process, started from this same script, subscribes to the images and shows them in a window.
+This script reads from the webcam with OpenCV and publishes the images over iceoryx2 (local
+zero-copy SHM) and the resolution over Zenoh (network). Another process, started from this
+same script, subscribes to the images and shows them in a window.
 
-This script requires you to install the airo-camera-toolkit, which you can do by following the instructions here:
-https://github.com/airo-ugent/airo-mono
+This script requires you to install the airo-camera-toolkit, which you can do by following the
+instructions here: https://github.com/airo-ugent/airo-mono
 """
+import ctypes
 import time
-from dataclasses import dataclass
 from typing import Final
 
 import cv2
@@ -16,41 +17,35 @@ from airo_camera_toolkit.cameras.opencv_videocapture.opencv_videocapture import 
 from airo_camera_toolkit.interfaces import RGBCamera
 from airo_camera_toolkit.utils.image_converter import ImageConverter
 from airo_typing import CameraIntrinsicsMatrixType, NumpyIntImageType, NumpyFloatImageType, CameraResolutionType
-from cyclonedds.domain import DomainParticipant
-from cyclonedds.idl import IdlStruct
 from loguru import logger
 
-from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
-from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
-from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
-from airo_ipc.framework.framework import IpcKind
-from airo_ipc.framework.node import Node
+from airo_ipc import Buffer, Transport, buffer_from_arrays, create_subscriber
+from airo_ipc.framework import Worker
 
 TOPIC_RESOLUTION: Final[str] = "resolution"
 TOPIC_RGB: Final[str] = "frame"
 
 
-@dataclass
-class ResolutionIdl(IdlStruct):
-    """We will send the resolution of the webcam over DDS: we need to define an IDL struct for this."""
-    width: int
-    height: int
+class Resolution(Buffer):
+    """Resolution of the webcam, sent over the network."""
+    _version_ = 1
+    _fields_ = [
+        ("width", ctypes.c_int32),
+        ("height", ctypes.c_int32),
+    ]
 
 
-@dataclass
-class WebcamFrame(BaseIdl):
-    """We will send the RGB frames over shared memory: we need to derive from BaseIDL."""
-    rgb: np.ndarray
-    intrinsics: np.ndarray
-
-    @staticmethod
-    def with_resolution(width: int, height: int):
-        """We may not know the resolution of the webcam when we create the frame, so we need a factory method."""
-        return WebcamFrame(rgb=np.zeros((height, width, 3), dtype=np.uint8), intrinsics=np.zeros((3, 3)))
+def make_frame_buffer(width: int, height: int) -> type[Buffer]:
+    """Buffer type for an RGB frame plus 3x3 intrinsics, sized to the given resolution."""
+    return buffer_from_arrays(
+        "WebcamFrame",
+        rgb=np.zeros((height, width, 3), dtype=np.uint8),
+        intrinsics=np.zeros((3, 3), dtype=np.float64),
+    )
 
 
-class RGBCameraPublisher(Node):
-    """The publisher will open the webcam and publish the resolution and frame in a loop."""
+class RGBCameraPublisher(Worker):
+    """The publisher opens the webcam and publishes the resolution and frame in a loop."""
 
     def _setup(self):
         logger.info("Opening camera.")
@@ -59,39 +54,48 @@ class RGBCameraPublisher(Node):
         logger.info("Getting resolution.")
         width, height = self._camera.resolution
 
+        self._FrameBuffer = make_frame_buffer(width, height)
+
         logger.info("Registering publishers.")
-        self._register_publisher(TOPIC_RESOLUTION, ResolutionIdl, IpcKind.DDS)
-        self._register_publisher(TOPIC_RGB, WebcamFrame.with_resolution(width, height), IpcKind.SHARED_MEMORY)
+        self._register_publisher(TOPIC_RESOLUTION, Resolution, Transport.NETWORK)
+        self._register_publisher(TOPIC_RGB, self._FrameBuffer, Transport.LOCAL)
+
+        self._resolution = Resolution(width=width, height=height)
+        self._intrinsics = self._camera.intrinsics_matrix()
 
     def _step(self):
-        """The _step method is called in a loop by the Node superclass."""
         rgb = self._camera.get_rgb_image_as_int()
 
-        self._publish(TOPIC_RESOLUTION,
-                      ResolutionIdl(width=self._camera.resolution[0], height=self._camera.resolution[1]))
-        self._publish(TOPIC_RGB, WebcamFrame(rgb=rgb, intrinsics=self._camera.intrinsics_matrix()))
+        self._publish(TOPIC_RESOLUTION, self._resolution)
+
+        msg = self._FrameBuffer()
+        msg.rgb[:] = rgb
+        msg.intrinsics[:] = self._intrinsics
+        self._publish(TOPIC_RGB, msg)
 
     def _teardown(self):
         pass
 
 
 class WebcamSubscriber(RGBCamera):
-    """Remark how we don't *need* to inherit from the Node superclass; this only depends on your use cases.
-        Here, we can simplify our code by not using callbacks, but running the subscriber in the main process."""
+    """We don't *need* to inherit from Worker; this depends on your use case.
+    Here, we use create_subscriber() directly so we can run in the main process without callbacks."""
 
     def __init__(self):
         super().__init__()
 
-        self._cyclone_dp = DomainParticipant()
-        self._reader_resolution = DDSReader(self._cyclone_dp, TOPIC_RESOLUTION, ResolutionIdl)
-        # Wait for the first resolution message.
+        # Wait for the first resolution message before we can size the frame buffer.
+        resolution_sub = create_subscriber(TOPIC_RESOLUTION, Resolution, Transport.NETWORK)
         resolution = None
         while resolution is None:
-            resolution = self._reader_resolution()
-            logger.info("Did not yet receive resolution message. Sleeping for 100 milliseconds...")
-            time.sleep(0.1)
-        self._reader_rgb = SMReader(self._cyclone_dp, TOPIC_RGB,
-                                    WebcamFrame.with_resolution(resolution.width, resolution.height))
+            resolution = resolution_sub.receive()
+            if resolution is None:
+                logger.info("Did not yet receive resolution message. Sleeping for 100 ms...")
+                time.sleep(0.1)
+        self._resolution = (resolution.width, resolution.height)
+
+        FrameBuffer = make_frame_buffer(resolution.width, resolution.height)
+        self._frame_sub = create_subscriber(TOPIC_RGB, FrameBuffer, Transport.LOCAL)
 
     @property
     def resolution(self) -> CameraResolutionType:
@@ -107,10 +111,11 @@ class WebcamSubscriber(RGBCamera):
         return self._intrinsics_matrix
 
     def _grab_images(self) -> None:
-        frame = self._reader_rgb()
+        frame = self._frame_sub.receive()
         if frame is not None:
-            self._rgb = frame.rgb.copy() # SMReader does not copy arrays: we need to do this ourselves.
-            self._intrinsics_matrix = frame.intrinsics
+            # The default receive() copies, so we own this data — no further .copy() needed.
+            self._rgb = np.array(frame.rgb, copy=True)
+            self._intrinsics_matrix = np.array(frame.intrinsics, copy=True)
 
 
 if __name__ == '__main__':

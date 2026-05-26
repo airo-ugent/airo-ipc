@@ -1,1 +1,1 @@
-from airo_ipc.framework.node import Node
+from airo_ipc.framework.worker import Worker

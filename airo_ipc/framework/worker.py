@@ -1,3 +1,15 @@
+"""Worker: a long-running process that ticks at a fixed rate and exchanges typed messages.
+
+A Worker bundles three responsibilities deliberately:
+
+1. Process lifecycle. It's a SpawnProcess subclass; the OS-level child is the Worker.
+2. A fixed-rate step loop. _setup() runs once, then _step() repeatedly at the configured frequency.
+3. IPC endpoints. Publishers and subscribers live in the child process and are torn down with it.
+
+These three are bundled because iceoryx2 Nodes and Zenoh Sessions must be created in the
+process that uses them — they don't survive fork() cleanly and hold process-scoped OS resources.
+"""
+
 import multiprocessing
 import time
 from abc import abstractmethod, ABC
@@ -11,10 +23,15 @@ from airo_ipc.buffer import Buffer
 from airo_ipc.transport import Transport
 
 
-class Node(SpawnProcess, ABC):
-    """A Node is a process that can communicate with other Nodes using the IPC framework.
-    This is a convenience class: it is not required to use airo-ipc, but it can simplify some of your code,
-    abstracting away implementation details and providing a simple publish/subscribe system."""
+class Worker(SpawnProcess, ABC):
+    """A long-running process that ticks at a fixed rate and exchanges typed messages with other Workers.
+
+    Subclass and implement `_setup`, `_step`, and `_teardown`. Use `_register_publisher` and
+    `_subscribe` from inside `_setup` to wire up IPC.
+
+    This is a convenience class; it is not required to use airo-ipc, but it standardizes the
+    "long-running process + IPC" pattern used across the AIRO lab.
+    """
 
     def __init__(self, update_frequency: float, verbose: bool = False):
         super().__init__()
@@ -24,7 +41,7 @@ class Node(SpawnProcess, ABC):
         self._verbose = verbose
 
     def run(self) -> None:
-        self._node_setup()
+        self._worker_setup()
 
         while not self._stop_event.is_set():
             start_time = time.time()
@@ -39,14 +56,14 @@ class Node(SpawnProcess, ABC):
 
             if self._verbose and desired_sleep_time < 0.0:
                 logger.warning(
-                    f"Node {self.__class__.__name__} cannot keep up with desired update frequency {self._update_frequency}Hz!"
+                    f"Worker {self.__class__.__name__} cannot keep up with desired update frequency {self._update_frequency}Hz!"
                 )
 
             time.sleep(sleep_time)
 
         self._teardown()
 
-    def _node_setup(self) -> None:
+    def _worker_setup(self) -> None:
         """Handles setup that must be done inside the child process."""
         self._subscribers: Dict[str, Any] = dict()
         self._callbacks: Dict[str, Callable] = dict()
@@ -61,15 +78,18 @@ class Node(SpawnProcess, ABC):
         transport: Transport = Transport.LOCAL,
         *,
         callback: Callable,
+        **kwargs: Any,
     ) -> None:
         if topic_name in self._subscribers:
             if self._verbose:
                 logger.warning(
-                    f"Node {self.__class__.__name__} is already subscribed to topic {topic_name}. Ignoring."
+                    f"Worker {self.__class__.__name__} is already subscribed to topic {topic_name}. Ignoring."
                 )
             return
 
-        self._subscribers[topic_name] = create_subscriber(topic_name, buffer_type, transport)
+        self._subscribers[topic_name] = create_subscriber(
+            topic_name, buffer_type, transport, **kwargs
+        )
         self._callbacks[topic_name] = callback
 
     def _update_subscriptions(self) -> None:
@@ -86,20 +106,23 @@ class Node(SpawnProcess, ABC):
         topic_name: str,
         buffer_type: type[Buffer],
         transport: Transport = Transport.LOCAL,
+        **kwargs: Any,
     ) -> None:
         if topic_name in self._publishers:
             if self._verbose:
                 logger.warning(
-                    f"Node {self.__class__.__name__} is already registered as a publisher for topic {topic_name}. Ignoring."
+                    f"Worker {self.__class__.__name__} is already registered as a publisher for topic {topic_name}. Ignoring."
                 )
             return
 
-        self._publishers[topic_name] = create_publisher(topic_name, buffer_type, transport)
+        self._publishers[topic_name] = create_publisher(
+            topic_name, buffer_type, transport, **kwargs
+        )
 
     def _publish(self, topic_name: str, value: Buffer) -> None:
         if topic_name not in self._publishers:
             logger.error(
-                f"Node {self.__class__.__name__} does not have a publisher for topic {topic_name}."
+                f"Worker {self.__class__.__name__} does not have a publisher for topic {topic_name}."
             )
             raise RuntimeError(
                 f"Cannot publish topics that were not registered. Violating topic: {topic_name}."

@@ -1,55 +1,137 @@
 # airo-ipc
 
-This repository contains utilities for inter-process communication (IPC) in Python, including shared memory
-communication and DDS communication.
-The DDS communication is based on the [Cyclone DDS framework](https://cyclonedds.io/) and the shared memory
-communication is built on the shared memory primitives of Python 3.8+.
+IPC framework for the AIRO lab. Provides easy, fast inter-process communication for robotics
+applications in Python, with a single API that hides the choice of transport.
+
+`airo-ipc` is a thin opinionated layer over two underlying libraries:
+
+- **[iceoryx2](https://iceoryx2.org/)** for local zero-copy shared memory IPC (sub-microsecond
+  latency on the same machine).
+- **[Zenoh](https://zenoh.io/)** for cross-machine pub/sub, request/response, and state sharing.
+
+You write your messages once as a typed `Buffer`, choose `Transport.LOCAL` or `Transport.NETWORK`
+per topic, and `airo-ipc` handles the rest — including cross-process version checks, sensible
+defaults for AIRO-lab use cases (camera frames at 60 Hz, low-rate state, control req/rep), and a
+`Worker` framework class that bundles a step loop with its IPC endpoints.
 
 ## Main features
 
-- Fast shared memory communication using Python 3.8+ shared memory primitives
-- DDS communication using the Cyclone DDS framework
-- Easy-to-install with one `pip` command
-
-The main benefit of using shared memory communication is that it is faster than other forms of IPC, such as sockets or
-pipes, because it does not require copying data between processes. This is especially useful for high-throughput
-applications, such as real-time video processing. By using CycloneDDS, we can also communicate between processes on
-different machines, which is useful for distributed systems. Finally, this Python package is installable with a single
-command, making it easy to use in any Python project, unlike other IPC libraries that require complex installation
-procedures (including CycloneDDS with [Iceoryx](https://iceoryx.io/) for shared memory communication),
-or [ROS 2](https://ros.org/).
-
-Please refer to the README file in `airo_ipc/cyclone_shm` for more information on the shared memory communication.
+- **Buffer**: define typed messages (including big numpy arrays) once, use them on both transports.
+- **Six communication patterns**: publisher/subscriber, requester/responder, state writer/reader.
+- **Worker**: a `multiprocessing.SpawnProcess` subclass with a fixed-rate step loop, publish/subscribe
+  helpers, and lifecycle hooks.
+- **Cross-process version safety**: `_ipc_version` field automatically checked on every receive.
+- **Single `pip install`**: no system daemons, no C++ runtime — both backends are pure-Rust libraries
+  with Python wheels.
 
 ## Installation
-
-You can install the `airo-ipc` package by running:
 
 ```bash
 pip install airo-ipc
 ```
 
-or directly from git:
+Or with `uv`:
 
 ```bash
-pip install git+https://github.com/airo-ugent/airo-ipc
+uv add airo-ipc
 ```
 
-or by cloning the repository and running:
+Or from source:
 
 ```bash
-pip install -e airo-ipc/
+git clone https://github.com/airo-ugent/airo-ipc
+cd airo-ipc && uv sync
 ```
 
-## Usage
+Python 3.10+ required.
 
-See [the shared memory communication README](airo_ipc/cyclone_shm/README.md) for more information on how to use the
-shared memory communication utilities.
+## Quick start
 
-This repository also contains a `framework` package, which provides a high-level interface for using shared memory and
-DDS communication together. It is not required, but may facilitate common use cases.
-See [the framework README](airo_ipc/framework/README.md) for more information.
+```python
+import ctypes
+from airo_ipc import Buffer, Transport, create_publisher, create_subscriber
 
-### Examples
 
-See the `examples/` directory to learn how to use airo-ipc.
+class Point(Buffer):
+    _version_ = 1
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+# Process A
+pub = create_publisher("waypoint", Point, Transport.LOCAL)
+pub.publish(Point(x=1.0, y=2.0))
+
+# Process B
+sub = create_subscriber("waypoint", Point, Transport.LOCAL)
+msg = sub.receive()
+print(msg.x, msg.y)
+```
+
+For big numpy buffers, generate a Buffer subclass with `buffer_from_arrays`:
+
+```python
+import numpy as np
+from airo_ipc import buffer_from_arrays
+
+FrameBuffer = buffer_from_arrays(
+    "FrameBuffer", version=1,
+    bgr=np.zeros((480, 640, 3), dtype=np.uint8),
+)
+
+buf = FrameBuffer()
+buf.bgr[:] = my_image  # numpy assignment into the shared-memory-backed struct
+```
+
+## Patterns
+
+| Pattern              | Factory                | When to use                                          |
+|----------------------|------------------------|------------------------------------------------------|
+| publisher/subscriber | `create_publisher`     | Streaming data (camera frames, sensor readings)      |
+|                      | `create_subscriber`    |                                                      |
+| requester/responder  | `create_requester`     | RPC-style calls (control commands, queries)          |
+|                      | `create_responder`     |                                                      |
+| state writer/reader  | `create_state_writer`  | Latest-known value (robot pose, current setpoint)    |
+|                      | `create_state_reader`  |                                                      |
+
+All six factories accept the same `(topic, buffer_type, transport)` arguments.
+
+## The Worker framework
+
+For long-running processes that tick at a fixed rate, use the `Worker` class:
+
+```python
+from airo_ipc import Buffer, Transport
+from airo_ipc.framework import Worker
+
+
+class CameraNode(Worker):
+    def _setup(self):
+        self._register_publisher("camera/frame", FrameBuffer, Transport.LOCAL)
+
+    def _step(self):
+        msg = FrameBuffer()
+        msg.bgr[:] = self._read_camera()
+        self._publish("camera/frame", msg)
+
+    def _teardown(self):
+        pass
+
+
+if __name__ == "__main__":
+    CameraNode(update_frequency=30).start()
+```
+
+See [the framework README](airo_ipc/framework/README.md) for details and
+`examples/framework/` for runnable examples.
+
+## Examples
+
+- `examples/framework/webcam.py` — publisher/subscriber webcam frames over iceoryx2 with
+  resolution over Zenoh.
+- `examples/framework/airo_mono.py` — same but exposing the airo-camera-toolkit `RGBCamera`
+  interface to the subscriber.
+
+## Migration from v0.2.x
+
+v1.0.0 is a hard break from v0.2.x (CycloneDDS + manual shared memory). See
+[MIGRATION.md](MIGRATION.md) for a one-page guide.
