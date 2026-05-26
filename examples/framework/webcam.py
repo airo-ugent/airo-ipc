@@ -18,16 +18,21 @@ TOPIC_BGR: Final[str] = "frame"
 
 
 class Resolution(Buffer):
-    """We will send the resolution of the webcam over the network."""
+    """We send the webcam resolution over the network. Two int32 fields via the annotation DSL."""
     _version_ = 1
-    _fields_ = [
-        ("width", ctypes.c_int32),
-        ("height", ctypes.c_int32),
-    ]
+    width: ctypes.c_int32
+    height: ctypes.c_int32
 
 
 def make_frame_buffer(width: int, height: int) -> type[Buffer]:
-    """Create a Buffer type for webcam frames with the given resolution."""
+    """The webcam resolution is only known at runtime, so we use the factory form.
+
+    For statically-known shapes you can use the DSL instead:
+
+        class FrameBuffer(Buffer):
+            _version_ = 1
+            bgr: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
+    """
     return buffer_from_arrays(
         "WebcamFrame",
         bgr=np.zeros((height, width, 3), dtype=np.uint8),

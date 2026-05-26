@@ -34,29 +34,49 @@ class WebcamFrame(BaseIdl):
     rgb: np.ndarray = np.empty((480, 640, 3), dtype=np.uint8)
 ```
 
-**After** — one `Buffer` base for both transports:
+**After** — one `Buffer` base for both transports, dataclass-shaped annotations:
 
 ```python
 import ctypes
-from airo_ipc import Buffer, buffer_from_arrays
+import numpy as np
+from airo_ipc import Buffer
 
 
 class Resolution(Buffer):
     _version_ = 1
-    _fields_ = [
-        ("width", ctypes.c_int32),
-        ("height", ctypes.c_int32),
-    ]
+    width: ctypes.c_int32
+    height: ctypes.c_int32
 
 
-WebcamFrame = buffer_from_arrays(
-    "WebcamFrame", version=1,
-    rgb=np.zeros((480, 640, 3), dtype=np.uint8),
-)
+class WebcamFrame(Buffer):
+    _version_ = 1
+    rgb: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
 ```
 
-Note the `_version_` field: it's mandatory and is checked automatically on every receive.
-Bump it whenever you change `_fields_` so old subscribers don't silently get corrupt data.
+Annotation rules:
+
+- `float` → `c_double`, `int` → `c_int64`, `bool` → `c_bool`. Use a `ctypes.c_*` type
+  directly if you need a narrower width.
+- `np.ndarray` fields require a class-level default of `np.zeros(shape, dtype=...)` —
+  the metaclass reads the shape and dtype from it. The default is consumed during class
+  construction and replaced by a property that returns a numpy view over shared memory.
+- Scalar fields may have a default (`x: float = 1.5`) which is applied when an instance
+  is constructed without that kwarg.
+- For runtime-determined shapes (e.g. a queried camera resolution), use the factory
+  form `buffer_from_arrays("Frame", version=1, rgb=np.zeros(shape, dtype=...))`.
+
+The explicit form is still supported (e.g. for porting v0.2.x code in bulk):
+
+```python
+class Resolution(Buffer):
+    _version_ = 1
+    _fields_ = [("width", ctypes.c_int32), ("height", ctypes.c_int32)]
+```
+
+You can't mix `_fields_` and annotations in the same class — pick one.
+
+Bump `_version_` whenever you change the layout so old subscribers raise
+`IncompatibleVersionError` instead of silently reading corrupt data.
 
 ## Picking a transport
 

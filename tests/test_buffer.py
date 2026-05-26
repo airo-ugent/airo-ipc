@@ -103,3 +103,119 @@ def test_buffer_from_arrays_serialization():
     data = buf.to_bytes()
     restored = B.from_bytes(data)
     np.testing.assert_array_equal(restored.bgr, buf.bgr)
+
+
+# --- Annotation DSL tests ---
+
+
+def test_dsl_scalars():
+    class P(Buffer):
+        _version_ = 1
+        x: float
+        y: float
+        seq: int
+        ok: bool
+
+    p = P(x=1.5, y=2.5, seq=7, ok=True)
+    assert p.x == 1.5 and p.y == 2.5 and p.seq == 7 and p.ok is True
+    assert p._ipc_version == 1
+    # Wire size: 4 (version) + 8 + 8 + 8 + 1, possibly padded.
+    # We only assert that it's at least the sum-without-padding.
+    assert ctypes.sizeof(P) >= 4 + 8 + 8 + 8 + 1
+
+
+def test_dsl_ndarray_field():
+    class F(Buffer):
+        _version_ = 1
+        bgr: np.ndarray = np.zeros((4, 6, 3), dtype=np.uint8)
+
+    buf = F()
+    assert buf.bgr.shape == (4, 6, 3)
+    assert buf.bgr.dtype == np.uint8
+    buf.bgr[1, 2, 0] = 99
+    assert buf.bgr[1, 2, 0] == 99
+    # Class-level default must not leak as a shared mutable.
+    other = F()
+    assert other.bgr[1, 2, 0] == 0
+
+
+def test_dsl_mixed_scalars_and_ndarray():
+    class S(Buffer):
+        _version_ = 2
+        timestamp: float
+        seq: int
+        bgr: np.ndarray = np.zeros((8, 8, 3), dtype=np.uint8)
+        intrinsics: np.ndarray = np.zeros((3, 3), dtype=np.float64)
+
+    s = S(timestamp=1.0, seq=42)
+    s.bgr[0, 0, 0] = 1
+    s.intrinsics[:] = np.eye(3)
+    assert s.timestamp == 1.0 and s.seq == 42
+    assert s.bgr[0, 0, 0] == 1
+    np.testing.assert_array_equal(s.intrinsics, np.eye(3))
+    assert s._ipc_version == 2
+
+
+def test_dsl_scalar_defaults():
+    class D(Buffer):
+        _version_ = 1
+        x: float = 1.5
+        y: int = 42
+
+    d = D()
+    assert d.x == 1.5 and d.y == 42
+    # Per-call override works.
+    d2 = D(x=0.5)
+    assert d2.x == 0.5 and d2.y == 42  # default still applied for y
+
+
+def test_dsl_ctypes_scalar_annotation():
+    class T(Buffer):
+        _version_ = 1
+        a: ctypes.c_uint8
+        b: ctypes.c_int32 = 7
+
+    t = T(a=200)
+    assert t.a == 200 and t.b == 7
+
+
+def test_dsl_rejects_ndarray_without_default():
+    with pytest.raises(TypeError, match="require a class-level default"):
+        class Bad(Buffer):
+            _version_ = 1
+            bgr: np.ndarray
+
+
+def test_dsl_rejects_mixed_fields_and_annotations():
+    with pytest.raises(TypeError, match="cannot mix"):
+        class Bad(Buffer):
+            _version_ = 1
+            x: float
+            _fields_ = [("y", ctypes.c_double)]
+
+
+def test_dsl_rejects_unsupported_annotation():
+    with pytest.raises(TypeError, match="unsupported annotation"):
+        class Bad(Buffer):
+            _version_ = 1
+            stuff: list
+
+
+def test_dsl_serialization_roundtrip():
+    """A DSL-defined buffer must round-trip cleanly through to_bytes/from_bytes."""
+
+    class F(Buffer):
+        _version_ = 3
+        seq: int
+        timestamp: float
+        bgr: np.ndarray = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    a = F(seq=11, timestamp=3.14)
+    a.bgr[0, 0, 0] = 7
+    a.bgr[1, 1, 2] = 250
+    restored = F.from_bytes(a.to_bytes())
+    assert restored.seq == 11
+    assert restored.timestamp == pytest.approx(3.14)
+    assert restored.bgr[0, 0, 0] == 7
+    assert restored.bgr[1, 1, 2] == 250
+    assert restored._ipc_version == 3

@@ -27,12 +27,10 @@ TOPIC_RGB: Final[str] = "frame"
 
 
 class Resolution(Buffer):
-    """Resolution of the webcam, sent over the network."""
+    """Resolution of the webcam, sent over the network. Annotation DSL form."""
     _version_ = 1
-    _fields_ = [
-        ("width", ctypes.c_int32),
-        ("height", ctypes.c_int32),
-    ]
+    width: ctypes.c_int32
+    height: ctypes.c_int32
 
 
 def make_frame_buffer(width: int, height: int) -> type[Buffer]:

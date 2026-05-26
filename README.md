@@ -54,7 +54,8 @@ from airo_ipc import Buffer, Transport, create_publisher, create_subscriber
 
 class Point(Buffer):
     _version_ = 1
-    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+    x: float
+    y: float
 
 
 # Process A
@@ -67,20 +68,27 @@ msg = sub.receive()
 print(msg.x, msg.y)
 ```
 
-For big numpy buffers, generate a Buffer subclass with `buffer_from_arrays`:
+For numpy buffers (e.g. camera frames), annotate the field as `np.ndarray` and supply
+the shape+dtype as a class-level default:
 
 ```python
 import numpy as np
-from airo_ipc import buffer_from_arrays
+from airo_ipc import Buffer
 
-FrameBuffer = buffer_from_arrays(
-    "FrameBuffer", version=1,
-    bgr=np.zeros((480, 640, 3), dtype=np.uint8),
-)
 
-buf = FrameBuffer()
+class FrameBuffer(Buffer):
+    _version_ = 1
+    timestamp: float
+    seq: int
+    bgr: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
+
+
+buf = FrameBuffer(timestamp=1.0, seq=0)
 buf.bgr[:] = my_image  # numpy assignment into the shared-memory-backed struct
 ```
+
+If the shape is only known at runtime (e.g. queried from a camera), use the factory form
+`buffer_from_arrays(name, version=..., field=np.zeros(shape, dtype=...))` instead.
 
 ## Patterns
 

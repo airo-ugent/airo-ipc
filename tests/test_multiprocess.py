@@ -81,6 +81,24 @@ def _publish_frames(topic: str, n: int):
         time.sleep(0.01)
 
 
+# DSL-defined buffer at module level so spawn's child re-import gets the same class layout.
+class DslFrame(Buffer):
+    _version_ = 1
+    seq: int
+    timestamp: float
+    bgr: np.ndarray = np.zeros((8, 8, 3), dtype=np.uint8)
+
+
+def _publish_dsl_frames(topic: str, n: int):
+    p = create_publisher(topic, DslFrame, Transport.LOCAL)
+    time.sleep(0.3)
+    for i in range(n):
+        m = DslFrame(seq=i, timestamp=float(i) * 0.01)
+        m.bgr[:] = i % 255
+        p.publish(m)
+        time.sleep(0.01)
+
+
 # ---------- iceoryx2 (LOCAL) ----------
 
 def test_local_pubsub_multiprocess():
@@ -180,6 +198,28 @@ def test_local_pubsub_numpy_multiprocess():
         time.sleep(0.01)
     proc.join(timeout=5.0)
     assert len(seen) >= 5
+
+
+def test_local_pubsub_dsl_multiprocess():
+    """End-to-end with a DSL-defined Buffer across processes."""
+    ctx = multiprocessing.get_context("spawn")
+    topic = "mp/local/dsl_frames"
+    proc = ctx.Process(target=_publish_dsl_frames, args=(topic, 15))
+    proc.start()
+    sub = create_subscriber(topic, DslFrame, Transport.LOCAL)
+
+    seen: list[tuple[int, int]] = []
+    deadline = time.monotonic() + 5.0
+    while len(seen) < 5 and time.monotonic() < deadline:
+        msg = sub.receive()
+        if msg is not None:
+            seen.append((msg.seq, int(msg.bgr[0, 0, 0])))
+        time.sleep(0.01)
+    proc.join(timeout=5.0)
+    assert len(seen) >= 5
+    # seq values should be monotonically increasing.
+    seqs = [s[0] for s in seen]
+    assert seqs == sorted(seqs)
 
 
 # ---------- Zenoh (NETWORK) ----------
