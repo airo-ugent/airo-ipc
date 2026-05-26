@@ -41,12 +41,14 @@ class Iox2ReqRepDefaults:
     """iceoryx2 request/response service sizing.
 
     - max_clients=4: a few callers (e.g. an MPC, a teleop, a logger).
-    - max_servers=2: usually one, second slot for a hot standby / restart handover.
+    - max_servers=1: the common case is one server per service. Warm-standby, hot-reload,
+      and sharded backends are the only legitimate reasons to want more — override
+      `max_servers=` at the call site for those.
     - max_active_requests_per_client=8: covers in-flight requests for slower handlers.
     """
 
     max_clients: int = 4
-    max_servers: int = 2
+    max_servers: int = 1
     max_active_requests_per_client: int = 8
 
 
