@@ -1,8 +1,16 @@
-"""Unified factory API for creating IPC publishers, subscribers, and other patterns."""
+"""Unified factory API for creating IPC publishers, subscribers, and other patterns.
+
+All factories accept the same `(topic, buffer_type, transport)` shape. Any extra **kwargs are
+forwarded to the backend (e.g. iceoryx2 service-sizing overrides). See `airo_ipc.defaults` for
+the AIRO-lab defaults and the names of the available overrides.
+
+Topic prefixes `local://` and `net://` are accepted as a shorthand for picking the transport
+when one isn't passed explicitly.
+"""
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any
 
 from airo_ipc.buffer import Buffer
 from airo_ipc.transport import Transport
@@ -11,7 +19,6 @@ from airo_ipc.transport import Transport
 def _parse_topic(topic: str, transport: Transport | None) -> tuple[str, Transport]:
     """Extract transport from topic prefix or use explicit/default transport."""
     if transport is not None:
-        # Strip prefix if present even when transport is explicit
         for prefix in ("local://", "net://"):
             if topic.startswith(prefix):
                 topic = topic[len(prefix):]
@@ -31,14 +38,15 @@ def create_publisher(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2Publisher
-        return Iox2Publisher(topic, buffer_type, node=session)
+        return Iox2Publisher(topic, buffer_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohPublisher
-        return ZenohPublisher(topic, buffer_type, session=session)
+        return ZenohPublisher(topic, buffer_type, session=session, **kwargs)
 
 
 def create_subscriber(
@@ -47,14 +55,15 @@ def create_subscriber(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2Subscriber
-        return Iox2Subscriber(topic, buffer_type, node=session)
+        return Iox2Subscriber(topic, buffer_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohSubscriber
-        return ZenohSubscriber(topic, buffer_type, session=session)
+        return ZenohSubscriber(topic, buffer_type, session=session, **kwargs)
 
 
 def create_requester(
@@ -64,14 +73,15 @@ def create_requester(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2Requester
-        return Iox2Requester(topic, request_type, reply_type, node=session)
+        return Iox2Requester(topic, request_type, reply_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohRequester
-        return ZenohRequester(topic, request_type, reply_type, session=session)
+        return ZenohRequester(topic, request_type, reply_type, session=session, **kwargs)
 
 
 def create_responder(
@@ -81,14 +91,15 @@ def create_responder(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2Responder
-        return Iox2Responder(topic, request_type, reply_type, node=session)
+        return Iox2Responder(topic, request_type, reply_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohResponder
-        return ZenohResponder(topic, request_type, reply_type, session=session)
+        return ZenohResponder(topic, request_type, reply_type, session=session, **kwargs)
 
 
 def create_state_writer(
@@ -97,14 +108,15 @@ def create_state_writer(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2StateWriter
-        return Iox2StateWriter(topic, buffer_type, node=session)
+        return Iox2StateWriter(topic, buffer_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohStateWriter
-        return ZenohStateWriter(topic, buffer_type, session=session)
+        return ZenohStateWriter(topic, buffer_type, session=session, **kwargs)
 
 
 def create_state_reader(
@@ -113,11 +125,12 @@ def create_state_reader(
     transport: Transport | None = None,
     *,
     session=None,
+    **kwargs: Any,
 ):
     topic, t = _parse_topic(topic, transport)
     if t == Transport.LOCAL:
         from airo_ipc.backends.iox2 import Iox2StateReader
-        return Iox2StateReader(topic, buffer_type, node=session)
+        return Iox2StateReader(topic, buffer_type, node=session, **kwargs)
     else:
         from airo_ipc.backends.net import ZenohStateReader
-        return ZenohStateReader(topic, buffer_type, session=session)
+        return ZenohStateReader(topic, buffer_type, session=session, **kwargs)
