@@ -31,25 +31,53 @@ class Node(SpawnProcess, ABC):
     def run(self) -> None:
         self._node_setup()
 
-        while not self._stop_event.is_set():
-            start_time = time.time()
+        try:
+            while not self._stop_event.is_set():
+                start_time = time.time()
 
-            self._update_subscriptions()
+                self._update_subscriptions()
 
-            self._step()
+                self._step()
 
-            elapsed_time = time.time() - start_time
-            desired_sleep_time = (1.0 / self._update_frequency) - elapsed_time
-            sleep_time = max(0.0, desired_sleep_time)
+                elapsed_time = time.time() - start_time
+                desired_sleep_time = (1.0 / self._update_frequency) - elapsed_time
+                sleep_time = max(0.0, desired_sleep_time)
 
-            if self._verbose and desired_sleep_time < 0.0:
-                logger.warning(
-                    f"Node {self.__class__.__name__} cannot keep up with desired update frequency {self._update_frequency}Hz!"
-                )
+                if self._verbose and desired_sleep_time < 0.0:
+                    logger.warning(
+                        f"Node {self.__class__.__name__} cannot keep up with desired update frequency {self._update_frequency}Hz!"
+                    )
 
-            time.sleep(sleep_time)
+                time.sleep(sleep_time)
 
-        self._teardown()
+            self._teardown()
+        finally:
+            # SM readers/writers own SHM segments that must be released before the
+            # DomainParticipant is closed (they publish/subscribe to a buffer-nr topic
+            # owned by the participant).
+            for reader in self._readers.values():
+                stop = getattr(reader, "stop", None)
+                if callable(stop):
+                    try:
+                        stop()
+                    except Exception:
+                        logger.exception("Error stopping reader")
+            for writer in self._writers.values():
+                stop = getattr(writer, "stop", None)
+                if callable(stop):
+                    try:
+                        stop()
+                    except Exception:
+                        logger.exception("Error stopping writer")
+            self._readers.clear()
+            self._writers.clear()
+
+            close = getattr(self._cyclone_dp, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.exception("Error closing DomainParticipant")
 
     def _node_setup(self) -> None:
         """Handles setup that must be done inside the child process."""
