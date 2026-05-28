@@ -76,9 +76,6 @@ class SMBufferReadField:
             shape, dtype=dtype, buffer=self.shm.buf
         )
 
-        # Ensure the shared memory is properly closed when the program exits
-        atexit.register(self.stop)
-
     def stop(self) -> None:
         """Close the shared memory segment."""
         self.shm.close()
@@ -125,6 +122,18 @@ class SMReader:
 
         # Load the shared memory buffers
         self.buffers = self.__load_shared_memory()
+
+        atexit.register(self.stop)
+
+    def stop(self) -> None:
+        """Close all shared memory buffers owned by this reader."""
+        for buffer in self.buffers:
+            for bufferfield in buffer.values():
+                try:
+                    bufferfield.stop()
+                except Exception:
+                    pass
+        atexit.unregister(self.stop)
 
     def __call__(self) -> BaseIdl:
         """

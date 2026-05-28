@@ -53,9 +53,6 @@ class SMBufferWriteField:
             shape, dtype=dtype, buffer=self.shm.buf
         )
 
-        # Ensure the shared memory is properly cleaned up when the program exits
-        atexit.register(self.stop)
-
     def stop(self) -> None:
         """Close and unlink the shared memory segment."""
         self.shm.close()
@@ -101,6 +98,18 @@ class SMWriter:
         # Create shared memory buffers
         self.buffers: List[Dict[str, SMBufferWriteField]] = self.__make_shared_memory()
         self.buffer_idx = 0
+
+        atexit.register(self.stop)
+
+    def stop(self) -> None:
+        """Close and unlink all shared memory buffers owned by this writer."""
+        for buffer in self.buffers:
+            for bufferfield in buffer.values():
+                try:
+                    bufferfield.stop()
+                except Exception:
+                    pass
+        atexit.unregister(self.stop)
 
     def __call__(self, msg: BaseIdl) -> None:
         """
