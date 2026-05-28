@@ -1,8 +1,8 @@
 import multiprocessing
 import time
-from abc import abstractmethod, ABC
+from abc import ABC, abstractmethod
 from multiprocessing.context import SpawnProcess
-from typing import Dict, Union, Callable, Any
+from typing import Any, Callable, Dict, Union
 
 from cyclonedds.domain import DomainParticipant
 from cyclonedds.idl import IdlMeta
@@ -19,7 +19,25 @@ from airo_ipc.framework.framework import IpcKind
 class Node(SpawnProcess, ABC):
     """A Node is a process that can communicate with other Nodes using the IPC framework.
     This is a convenience class: it is not required to use airo-ipc, but it can simplify some of your code,
-    abstracting away implementation details and providing a simple publish/subscribe system."""
+    abstracting away implementation details and providing a simple publish/subscribe system.
+
+    Multiprocessing context
+    -----------------------
+    ``Node`` is a `SpawnProcess`, so the child is always started with the "spawn"
+    method regardless of the platform default. Any `multiprocessing` primitive
+    (``Event``, ``Value``, ``Queue``, ``Lock``, ...) that you attach to a Node or share
+    between Nodes **must** be created from the "spawn" context, e.g.,
+
+        ctx = multiprocessing.get_context("spawn")
+        self._my_event = ctx.Event()
+        self._my_value = ctx.Value("i", 0)
+
+    Plain ``multiprocessing.Event()`` / ``multiprocessing.Value(...)`` calls pick up
+    the platform default start method (``"fork"`` on Linux), and mixing fork-context
+    primitives with a spawn-started child can lead to silent failures. See
+    https://github.com/airo-ugent/airo-ipc/issues/5 and
+    https://github.com/airo-ugent/airo-ipc/issues/7 for background.
+    """
 
     def __init__(self, update_frequency: float, verbose: bool = False):
         super().__init__()
@@ -27,6 +45,15 @@ class Node(SpawnProcess, ABC):
         self._update_frequency = update_frequency
         self._stop_event = multiprocessing.get_context("spawn").Event()
         self._verbose = verbose
+
+        default_method = multiprocessing.get_context().get_start_method()
+        if default_method != "spawn" and self._verbose:
+            logger.warning(
+                f"Default multiprocessing start method is {default_method!r}, not 'spawn'. "
+                "Any multiprocessing primitives you create without specifying a context "
+                "(e.g. multiprocessing.Event()) will be incompatible with this Node's "
+                "spawn-started child process. Use multiprocessing.get_context('spawn') instead."
+            )
 
     def run(self) -> None:
         self._node_setup()
