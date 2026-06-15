@@ -5,6 +5,16 @@ communication and DDS communication.
 The DDS communication is based on the [Cyclone DDS framework](https://cyclonedds.io/) and the shared memory
 communication is built on the shared memory primitives of Python 3.8+.
 
+## Note (June 2026)
+
+This library was developed to simplify the multiprocessing code in [airo-camera-toolkit](https://pypi.org/project/airo-camera-toolkit/) which used Python's shared memory primitives for high-performance IPC.
+It remains a useful library for research purposes, where it is often more than powerful enough for sharing data between processes with high bandwidth requirements.
+
+However, today it may make more sense to use [iceoryx2](https://iceoryx.io/) and [Zenoh](https://zenoh.io/) to communicate data between processes on the same machine, or on multiple hosts, respectively.
+These libraries are written in Rust (as opposed to Python for airo-ipc) and are actively being developed as Eclipse Foundation projects.
+
+Consider these alternatives to airo-ipc if you need performance and robustness.
+
 ## Main features
 
 - Fast shared memory communication using Python 3.8+ shared memory primitives
