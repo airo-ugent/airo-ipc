@@ -33,5 +33,7 @@ packages = ["airo_ipc"]
 
 [dependency-groups]
 dev = [
+    "black>=24.0.0",
     "mypy>=1.19.1",
+    "pytest>=8.0.0",
 ]
