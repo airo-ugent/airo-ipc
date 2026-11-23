@@ -39,6 +39,60 @@ Req = TypeVar("Req", bound=Message)
 Rep = TypeVar("Rep", bound=Message)
 
 
+class _OverrunReporter:
+    """Logs loop overruns without flooding the log.
+
+    The first overrun is logged at once. After that, at most one summary per ``interval``
+    seconds reports how many iterations overran and the worst overrun.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        period: float,
+        interval: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._name = name
+        self._period_ms = period * 1e3
+        self._interval = interval
+        self._clock = clock
+        self._last_log = -float("inf")
+        self._count = 0
+        self._worst = 0.0
+
+    def update(self, overrun: float) -> None:
+        """Call once per iteration with the overrun in seconds (0 if on time)."""
+        if overrun > 0:
+            self._count += 1
+            self._worst = max(self._worst, overrun)
+        now = self._clock()
+        if self._count == 0 or now - self._last_log < self._interval:
+            return
+        if self._last_log == -float("inf"):
+            logger.warning(
+                "%s overran its period of %.1f ms by %.1f ms (further overruns are "
+                "summarized every %.0f s)",
+                self._name,
+                self._period_ms,
+                self._worst * 1e3,
+                self._interval,
+            )
+        else:
+            logger.warning(
+                "%s overran its period of %.1f ms in %d iterations during the last "
+                "%.0f s (worst: %.1f ms)",
+                self._name,
+                self._period_ms,
+                self._count,
+                now - self._last_log,
+                self._worst * 1e3,
+            )
+        self._last_log = now
+        self._count = 0
+        self._worst = 0.0
+
+
 class Worker(SpawnProcess, ABC):
     """A process that runs ``_step()`` at a fixed rate and exchanges messages.
 
@@ -67,7 +121,8 @@ class Worker(SpawnProcess, ABC):
 
     Args:
         update_frequency: ``_step()`` calls per second.
-        verbose: Log a warning when a loop iteration overruns its period.
+        verbose: Log a warning when loop iterations overrun their period (the first one at
+            once, then at most one summary every 5 seconds).
     """
 
     def __init__(self, update_frequency: float, verbose: bool = False) -> None:
@@ -88,6 +143,7 @@ class Worker(SpawnProcess, ABC):
         try:
             self._setup()
             period = 1.0 / self._update_frequency
+            overruns = _OverrunReporter(type(self).__name__, period)
             next_tick = time.monotonic()
             while not self._stop_event.is_set():
                 self._update_subscriptions()
@@ -97,14 +153,9 @@ class Worker(SpawnProcess, ABC):
                 self._step()
                 next_tick += period
                 delay = next_tick - time.monotonic()
+                if self._verbose:
+                    overruns.update(max(0.0, -delay))
                 if delay < 0:
-                    if self._verbose:
-                        logger.warning(
-                            "%s overran its period of %.1f ms by %.1f ms",
-                            type(self).__name__,
-                            period * 1e3,
-                            -delay * 1e3,
-                        )
                     next_tick = time.monotonic()  # do not try to catch up
                 else:
                     self._stop_event.wait(delay)

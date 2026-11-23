@@ -101,3 +101,24 @@ class Idle(Worker):
 def test_worker_rejects_invalid_frequency() -> None:
     with pytest.raises(ValueError, match="update_frequency"):
         Idle(update_frequency=0)
+
+
+def test_overrun_reporter_does_not_flood(caplog: pytest.LogCaptureFixture) -> None:
+    from airo_ipc.framework.worker import _OverrunReporter
+
+    now = [0.0]
+    reporter = _OverrunReporter(
+        "Cam", period=1 / 30, interval=5.0, clock=lambda: now[0]
+    )
+    with caplog.at_level("WARNING", logger="airo_ipc"):
+        reporter.update(0.0)  # on time: nothing
+        for i in range(150):  # 150 overruns in 4.97 s: only the first is logged
+            now[0] = i * 0.033
+            reporter.update(0.018 if i % 2 else 0.014)
+        assert len(caplog.records) == 1
+        assert "by 14.0 ms" in caplog.records[0].getMessage()
+        now[0] = 5.5  # an on-time iteration after the interval flushes the summary
+        reporter.update(0.0)
+    assert len(caplog.records) == 2
+    summary = caplog.records[1].getMessage()
+    assert "in 149 iterations" in summary and "worst: 18.0 ms" in summary
