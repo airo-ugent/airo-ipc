@@ -73,8 +73,10 @@ Everything runs on one thread, so callbacks, handlers and `_step()` need no lock
 ## Rules
 
 - Share only spawn-context `multiprocessing` objects with a Worker:
-  `multiprocessing.get_context("spawn").Event()`. Objects from the default (fork) context fail
-  silently.
+  `multiprocessing.get_context("spawn").Event()`. On Python 3.11–3.13 the Linux default context
+  is fork, and `worker.start()` raises `RuntimeError` for a fork-context `Event`, `Lock`, `Queue`
+  or `Value`. Python 3.14 uses forkserver by default, where it happens to work, but follow the
+  rule on every version so that the code also runs on older Pythons.
 - The Worker class must be importable by the child process (define it at module level, and start
   it under `if __name__ == "__main__":`).
 - A Worker is not required: endpoints work in any process, see `examples/framework/airo_mono.py`.
