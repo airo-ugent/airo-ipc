@@ -91,12 +91,9 @@ class Context:
         """
         self._check_args(topic, transport, ("msg_type", msg_type))
         with self._lock:
-            if isinstance(transport, Local):
-                port = self._iox2_backend().publisher(topic, msg_type, latched)
-            else:
-                port = self._zenoh_backend().publisher(
-                    transport.resolve(), topic, msg_type, latched
-                )
+            port = self._backend(transport).publisher(
+                transport, topic, msg_type, latched
+            )
             return self._track(Publisher(port, topic, msg_type, transport, latched))
 
     def subscriber(
@@ -119,12 +116,7 @@ class Context:
         if not isinstance(qos, (Latest, Queue)):
             raise TypeError(f"qos must be Latest() or Queue(depth), got {qos!r}")
         with self._lock:
-            if isinstance(transport, Local):
-                port = self._iox2_backend().subscriber(topic, msg_type, qos)
-            else:
-                port = self._zenoh_backend().subscriber(
-                    transport.resolve(), topic, msg_type, qos
-                )
+            port = self._backend(transport).subscriber(transport, topic, msg_type, qos)
             return self._track(Subscriber(port, topic, msg_type, transport))
 
     def client(
@@ -142,16 +134,17 @@ class Context:
             ("response_type", response_type),
         )
         with self._lock:
-            if isinstance(transport, Local):
-                port = self._iox2_backend().client(topic, request_type, response_type)
-                thread_safe = False
-            else:
-                port = self._zenoh_backend().client(
-                    transport.resolve(), topic, request_type, response_type
-                )
-                thread_safe = True
+            backend = self._backend(transport)
+            port = backend.client(transport, topic, request_type, response_type)
             return self._track(
-                Client(port, topic, request_type, response_type, transport, thread_safe)
+                Client(
+                    port,
+                    topic,
+                    request_type,
+                    response_type,
+                    transport,
+                    backend.clients_thread_safe,
+                )
             )
 
     def server(
@@ -181,12 +174,8 @@ class Context:
         if not callable(handler):
             raise TypeError(f"handler must be callable, got {handler!r}")
         with self._lock:
-            if isinstance(transport, Local):
-                port = self._iox2_backend().server(topic, request_type, response_type)
-            else:
-                port = self._zenoh_backend().server(
-                    transport.resolve(), topic, request_type, response_type
-                )
+            backend = self._backend(transport)
+            port = backend.server(transport, topic, request_type, response_type)
             return self._track(
                 Server(
                     port, topic, request_type, response_type, transport, handler, spin
@@ -247,6 +236,14 @@ class Context:
     def _track(self, endpoint: Any) -> Any:
         self._endpoints.add(endpoint)
         return endpoint
+
+    def _backend(self, transport: Transport) -> Any:
+        """The backend for ``transport``. Both backends have the same factory signatures."""
+        return (
+            self._iox2_backend()
+            if isinstance(transport, Local)
+            else self._zenoh_backend()
+        )
 
     def _iox2_backend(self) -> Iox2Backend:
         if self._iox2 is None:

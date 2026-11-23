@@ -44,10 +44,6 @@ include = ["airo_ipc*"]
 airo_ipc = ["py.typed"]
 
 [dependency-groups]
-benchmark = [
-    "matplotlib>=3.9.4",
-    "psutil>=7.2.2",
-]
 dev = [
     "black>=26.10.1",
     "mypy>=1.19.1",

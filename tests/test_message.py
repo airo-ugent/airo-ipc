@@ -195,9 +195,12 @@ def test_fingerprint_is_stable_across_releases() -> None:
 EXPECTED_POINT_FINGERPRINT = "07f10e55dc1d7760"
 
 
-def _fingerprint_of(source: str) -> int:
+def _define(source: str) -> type[Message]:
+    """Run ``source`` (which defines a class ``M``) and return ``M``."""
     namespace: dict[str, object] = {}
     exec(  # noqa: S102 - test helper
+        "import ctypes\n"
+        "from typing import Annotated\n"
         "import numpy as np\n"
         "from numpy.typing import NDArray\n"
         "from airo_ipc.message import Message, Array, i32, f32\n" + source,
@@ -205,7 +208,11 @@ def _fingerprint_of(source: str) -> int:
     )
     cls = namespace["M"]
     assert isinstance(cls, type) and issubclass(cls, Message)
-    return cls.schema_fingerprint()
+    return cls
+
+
+def _fingerprint_of(source: str) -> int:
+    return _define(source).schema_fingerprint()
 
 
 BASE = "class M(Message):\n    a: float\n    b: NDArray[np.uint8] = Array((2, 3), np.uint8)\n"
@@ -351,11 +358,24 @@ def test_local_alias_in_string_annotation() -> None:
 # -- invalid definitions --------------------------------------------------------------------------
 
 
-def test_reject_explicit_fields() -> None:
-    with pytest.raises(TypeError, match="_fields_"):
-
-        class Bad(Message):
-            _fields_ = [("x", ctypes.c_double)]
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ("_fields_ = [('x', ctypes.c_double)]", "_fields_"),
+        ("_x: float", "must not start with '_'"),
+        ("meta: float", "reserved"),
+        ("name: str", "unsupported field annotation"),
+        ("x: ctypes.c_int32", "sized alias"),
+        ("img: NDArray[np.uint8]", "needs a shape and dtype"),
+        ("img: float = Array((2,), np.float64)", "needs an NDArray annotation"),
+        ("img: NDArray[np.uint8] = Array((2,), np.uint16)", "annotation says"),
+        ("n: int = 1.5", "is not a int"),
+        ("n: Annotated[float, ctypes.c_int32]", "incompatible"),
+    ],
+)
+def test_reject_invalid_definition(body: str, error: str) -> None:
+    with pytest.raises(TypeError, match=error):
+        _define(f"class M(Message):\n    {body}\n")
 
 
 def test_reject_message_inheritance() -> None:
@@ -363,55 +383,6 @@ def test_reject_message_inheritance() -> None:
 
         class Bad(Point):
             z: float
-
-
-def test_reject_private_field() -> None:
-    with pytest.raises(TypeError, match="must not start with '_'"):
-
-        class Bad(Message):
-            _x: float
-
-
-def test_reject_reserved_name() -> None:
-    with pytest.raises(TypeError, match="reserved"):
-
-        class Bad(Message):
-            meta: float
-
-
-def test_reject_unsupported_annotation() -> None:
-    with pytest.raises(TypeError, match="unsupported field annotation"):
-
-        class Bad(Message):
-            name: str
-
-
-def test_reject_raw_ctypes_annotation() -> None:
-    with pytest.raises(TypeError, match="sized alias"):
-
-        class Bad(Message):
-            x: ctypes.c_int32
-
-
-def test_reject_ndarray_without_array() -> None:
-    with pytest.raises(TypeError, match="needs a shape and dtype"):
-
-        class Bad(Message):
-            img: NDArray[np.uint8]
-
-
-def test_reject_array_without_ndarray_annotation() -> None:
-    with pytest.raises(TypeError, match="needs an NDArray annotation"):
-
-        class Bad(Message):
-            img: float = Array((2,), np.float64)
-
-
-def test_reject_annotation_dtype_mismatch() -> None:
-    with pytest.raises(TypeError, match="annotation says"):
-
-        class Bad(Message):
-            img: NDArray[np.uint8] = Array((2,), np.uint16)
 
 
 def test_accept_generic_annotation_dtype() -> None:
@@ -426,22 +397,6 @@ def test_accept_generic_annotation_dtype() -> None:
 def test_reject_unsupported_dtype(dtype: object) -> None:
     with pytest.raises(TypeError, match="unsupported array dtype"):
         Array((2,), dtype)  # type: ignore[arg-type]
-
-
-def test_reject_bad_scalar_default() -> None:
-    with pytest.raises(TypeError, match="is not a int"):
-
-        class Bad(Message):
-            n: int = 1.5  # type: ignore[assignment]
-
-
-def test_reject_annotated_kind_mismatch() -> None:
-    from typing import Annotated
-
-    with pytest.raises(TypeError, match="incompatible"):
-
-        class Bad(Message):
-            n: Annotated[float, ctypes.c_int32]
 
 
 def test_message_base_not_instantiable() -> None:

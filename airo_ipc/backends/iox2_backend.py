@@ -34,6 +34,7 @@ from airo_ipc.errors import (
 )
 from airo_ipc.message import FLAG_LATCHED, Message
 from airo_ipc.qos import MAX_QUEUE_DEPTH, QoS
+from airo_ipc.transport import Local
 
 __all__ = ["Iox2Backend"]
 
@@ -43,6 +44,13 @@ _EVENT_SUFFIX = "/@evt"
 _REQUEST_EVENT_SUFFIX = "/@req"
 _RESPONSE_EVENT_SUFFIX = "/@rep"
 _LATCH_REFRESH_SECONDS = 0.05
+
+
+def _notify(notifier: Any) -> None:
+    try:
+        notifier.notify()
+    except Exception:  # pragma: no cover - a full listener queue only delays a wake-up
+        pass
 
 
 def _wait(listener: Any, seconds: float) -> None:
@@ -107,6 +115,9 @@ def _dynamic_config(service: Any) -> Any:
 class Iox2Backend:
     """Owns the iceoryx2 node of one :class:`~airo_ipc.context.Context`."""
 
+    #: Whether one client port may be used by several threads at once.
+    clients_thread_safe = False
+
     def __init__(self, sizing: Iox2Sizing) -> None:
         self.sizing = sizing
         self._node = iox2.NodeBuilder.new().create(iox2.ServiceType.Ipc)
@@ -150,6 +161,15 @@ class Iox2Backend:
         except Exception as e:
             raise _open_error("event service", name, e) from e
 
+    def topic_events(self, topic: str) -> Any:
+        """The event service that wakes the subscribers of ``topic``."""
+        s = self.sizing
+        return self.event_service(
+            topic + _EVENT_SUFFIX,
+            listeners=s.max_subscribers,
+            notifiers=s.max_publishers,
+        )
+
     def reqrep_service(
         self,
         topic: str,
@@ -173,8 +193,10 @@ class Iox2Backend:
 
     # -- ports ----------------------------------------------------------------------------
 
+    # The factories take the transport only to match the Zenoh backend; it is unused here.
+
     def publisher(
-        self, topic: str, msg_type: type[Message], latched: bool
+        self, transport: Local, topic: str, msg_type: type[Message], latched: bool
     ) -> PublisherPort:
         port = Iox2PublisherPort(self, topic, msg_type)
         if latched:
@@ -183,19 +205,19 @@ class Iox2Backend:
         return port
 
     def subscriber(
-        self, topic: str, msg_type: type[Message], qos: QoS
+        self, transport: Local, topic: str, msg_type: type[Message], qos: QoS
     ) -> SubscriberPort:
         return Iox2SubscriberPort(self, topic, msg_type, qos)
 
     def client(
-        self, topic: str, request_type: type[Message], response_type: type[Message]
+        self, transport: Local, topic: str, req: type[Message], rep: type[Message]
     ) -> ClientPort:
-        return Iox2ClientPort(self, topic, request_type, response_type)
+        return Iox2ClientPort(self, topic, req, rep)
 
     def server(
-        self, topic: str, request_type: type[Message], response_type: type[Message]
+        self, transport: Local, topic: str, req: type[Message], rep: type[Message]
     ) -> ServerPort:
-        return Iox2ServerPort(self, topic, request_type, response_type)
+        return Iox2ServerPort(self, topic, req, rep)
 
     def close(self) -> None:
         self._stop.set()
@@ -233,14 +255,8 @@ class Iox2PublisherPort(PublisherPort):
             self._publisher = self._service.publisher_builder().create()
         except Exception as e:
             raise _open_error("publisher", topic, e) from e
-        s = backend.sizing
-        events = backend.event_service(
-            topic + _EVENT_SUFFIX,
-            listeners=s.max_subscribers,
-            notifiers=s.max_publishers,
-        )
-        self._notifier = events.notifier_builder().create()
-        self._events = events
+        self._events = backend.topic_events(topic)
+        self._notifier = self._events.notifier_builder().create()
         self._lock = threading.Lock()  # the latch thread also uses the publisher
         self._closed = False
 
@@ -253,7 +269,7 @@ class Iox2PublisherPort(PublisherPort):
     def send(self, token: Any) -> None:
         with self._lock:
             token.assume_init().send()
-            self._notify()
+            _notify(self._notifier)
 
     def discard(self, token: Any) -> None:
         with self._lock:
@@ -262,15 +278,7 @@ class Iox2PublisherPort(PublisherPort):
     def send_copy(self, msg: Message) -> None:
         with self._lock:
             self._publisher.send_copy(msg)
-            self._notify()
-
-    def _notify(self) -> None:
-        try:
-            self._notifier.notify()
-        except (
-            Exception
-        ):  # pragma: no cover - a full listener queue only delays a wake-up
-            pass
+            _notify(self._notifier)
 
     def update_connections(self) -> None:
         with self._lock:
@@ -307,15 +315,9 @@ class Iox2SubscriberPort(SubscriberPort):
             )
         except Exception as e:
             raise _open_error("subscriber", topic, e) from e
-        s = backend.sizing
-        events = backend.event_service(
-            topic + _EVENT_SUFFIX,
-            listeners=s.max_subscribers,
-            notifiers=s.max_publishers,
-        )
-        self._listener = events.listener_builder().create()
-        self._events = events
-        self._max_borrowed = s.max_borrowed_per_subscriber
+        self._events = backend.topic_events(topic)
+        self._listener = self._events.listener_builder().create()
+        self._max_borrowed = backend.sizing.max_borrowed_per_subscriber
         self._created_ns = time.time_ns()
         self._closed = False
 
@@ -395,7 +397,65 @@ def _envelope_type(response_type: type[Message]) -> type[ctypes.Structure]:
     return _Envelope
 
 
-class Iox2ClientPort(ClientPort):
+class _Iox2ServicePort:
+    """Setup and teardown shared by the client and the server.
+
+    A service is a request/response service plus two event services: one wakes the servers
+    (new request), the other wakes the clients (new response).
+    """
+
+    def _open(
+        self,
+        role: str,
+        backend: Iox2Backend,
+        topic: str,
+        request_type: type[Message],
+        response_type: type[Message],
+    ) -> Any:
+        self._topic = topic
+        self._service = backend.reqrep_service(
+            topic, request_type, _envelope_type(response_type)
+        )
+        builder = (
+            self._service.client_builder()
+            if role == "client"
+            else self._service.server_builder()
+        )
+        try:
+            port = builder.create()
+        except Exception as e:
+            raise _open_error(role, topic, e) from e
+        s = backend.sizing
+        requests = backend.event_service(
+            topic + _REQUEST_EVENT_SUFFIX,
+            listeners=s.max_servers,
+            notifiers=s.max_clients,
+        )
+        responses = backend.event_service(
+            topic + _RESPONSE_EVENT_SUFFIX,
+            listeners=s.max_clients,
+            notifiers=s.max_servers,
+        )
+        mine, theirs = (
+            (responses, requests) if role == "client" else (requests, responses)
+        )
+        self._listener = mine.listener_builder().create()
+        self._notifier = theirs.notifier_builder().create()
+        self._events: Any = (requests, responses)
+        self._port: Any = port
+        self._closed = False
+        return port
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._port.delete()
+            self._listener.delete()
+            self._notifier.delete()
+            self._service = self._events = None  # frees the service records
+
+
+class Iox2ClientPort(_Iox2ServicePort, ClientPort):
     def __init__(
         self,
         backend: Iox2Backend,
@@ -403,39 +463,13 @@ class Iox2ClientPort(ClientPort):
         request_type: type[Message],
         response_type: type[Message],
     ) -> None:
-        self._topic = topic
-        self._response_type = response_type
-        self._service = backend.reqrep_service(
-            topic, request_type, _envelope_type(response_type)
-        )
-        try:
-            self._client = self._service.client_builder().create()
-        except Exception as e:
-            raise _open_error("client", topic, e) from e
-        s = backend.sizing
-        req_events = backend.event_service(
-            topic + _REQUEST_EVENT_SUFFIX,
-            listeners=s.max_servers,
-            notifiers=s.max_clients,
-        )
-        rep_events = backend.event_service(
-            topic + _RESPONSE_EVENT_SUFFIX,
-            listeners=s.max_clients,
-            notifiers=s.max_servers,
-        )
-        self._notifier = req_events.notifier_builder().create()
-        self._listener = rep_events.listener_builder().create()
-        self._events: Any = (req_events, rep_events)
-        self._closed = False
+        self._client = self._open("client", backend, topic, request_type, response_type)
 
     def call(self, request: Message, timeout: float | None) -> Message:
         if not self.has_server:
             raise NoServerError(f"no server for service '{self._topic}' on Local()")
         pending = self._client.send_copy(request)
-        try:
-            self._notifier.notify()
-        except Exception:  # pragma: no cover
-            pass
+        _notify(self._notifier)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             connected = (
@@ -473,16 +507,8 @@ class Iox2ClientPort(ClientPort):
     def has_server(self) -> bool:
         return bool(_dynamic_config(self._service).number_of_servers > 0)
 
-    def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._client.delete()
-            self._notifier.delete()
-            self._listener.delete()
-            self._service = self._events = None  # frees the service records
 
-
-class Iox2ServerPort(ServerPort):
+class Iox2ServerPort(_Iox2ServicePort, ServerPort):
     def __init__(
         self,
         backend: Iox2Backend,
@@ -490,29 +516,7 @@ class Iox2ServerPort(ServerPort):
         request_type: type[Message],
         response_type: type[Message],
     ) -> None:
-        self._topic = topic
-        self._service = backend.reqrep_service(
-            topic, request_type, _envelope_type(response_type)
-        )
-        try:
-            self._server = self._service.server_builder().create()
-        except Exception as e:
-            raise _open_error("server", topic, e) from e
-        s = backend.sizing
-        req_events = backend.event_service(
-            topic + _REQUEST_EVENT_SUFFIX,
-            listeners=s.max_servers,
-            notifiers=s.max_clients,
-        )
-        rep_events = backend.event_service(
-            topic + _RESPONSE_EVENT_SUFFIX,
-            listeners=s.max_clients,
-            notifiers=s.max_servers,
-        )
-        self._listener = req_events.listener_builder().create()
-        self._notifier = rep_events.notifier_builder().create()
-        self._events: Any = (req_events, rep_events)
-        self._closed = False
+        self._server = self._open("server", backend, topic, request_type, response_type)
 
     def receive(self, timeout: float) -> tuple[Message, Any] | None:
         active = self._server.receive()
@@ -551,15 +555,4 @@ class Iox2ServerPort(ServerPort):
             uninit.assume_init().send()
         finally:
             active.delete()  # tells the client that no more responses follow
-        try:
-            self._notifier.notify()
-        except Exception:  # pragma: no cover
-            pass
-
-    def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._server.delete()
-            self._listener.delete()
-            self._notifier.delete()
-            self._service = self._events = None  # frees the service records
+        _notify(self._notifier)

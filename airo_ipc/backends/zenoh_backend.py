@@ -41,7 +41,7 @@ from airo_ipc.errors import (
 )
 from airo_ipc.message import Message
 from airo_ipc.qos import QoS
-from airo_ipc.transport import ResolvedNetwork
+from airo_ipc.transport import Network, ResolvedNetwork
 
 __all__ = ["ZenohBackend"]
 
@@ -107,6 +107,9 @@ class ZenohBackend:
     session.
     """
 
+    #: Whether one client port may be used by several threads at once.
+    clients_thread_safe = True
+
     def __init__(self) -> None:
         self._sessions: dict[tuple[object, ...], zenoh.Session] = {}
         self._lock = threading.Lock()
@@ -130,37 +133,31 @@ class ZenohBackend:
                 self._sessions[key] = session
             return session
 
+    # The factories take the same arguments as those of the iceoryx2 backend.
+
     def publisher(
-        self, net: ResolvedNetwork, topic: str, msg_type: type[Message], latched: bool
+        self, transport: Network, topic: str, msg_type: type[Message], latched: bool
     ) -> PublisherPort:
+        net = transport.resolve()
         return ZenohPublisherPort(self.session(net), net, topic, msg_type, latched)
 
     def subscriber(
-        self, net: ResolvedNetwork, topic: str, msg_type: type[Message], qos: QoS
+        self, transport: Network, topic: str, msg_type: type[Message], qos: QoS
     ) -> SubscriberPort:
+        net = transport.resolve()
         return ZenohSubscriberPort(self.session(net), net, topic, msg_type, qos)
 
     def client(
-        self,
-        net: ResolvedNetwork,
-        topic: str,
-        request_type: type[Message],
-        response_type: type[Message],
+        self, transport: Network, topic: str, req: type[Message], rep: type[Message]
     ) -> ClientPort:
-        return ZenohClientPort(
-            self.session(net), net, topic, request_type, response_type
-        )
+        net = transport.resolve()
+        return ZenohClientPort(self.session(net), net, topic, req, rep)
 
     def server(
-        self,
-        net: ResolvedNetwork,
-        topic: str,
-        request_type: type[Message],
-        response_type: type[Message],
+        self, transport: Network, topic: str, req: type[Message], rep: type[Message]
     ) -> ServerPort:
-        return ZenohServerPort(
-            self.session(net), net, topic, request_type, response_type
-        )
+        net = transport.resolve()
+        return ZenohServerPort(self.session(net), net, topic, req, rep)
 
     def close(self) -> None:
         with self._lock:

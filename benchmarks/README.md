@@ -1,27 +1,21 @@
 # airo-ipc benchmarks
 
-Latency benchmarks for airo-ipc 1.0 (iceoryx2 + Zenoh), and the same workloads on 0.3
-(CycloneDDS + `multiprocessing.shared_memory`) for comparison. Every benchmark runs the
-publisher (or server) in a spawned process.
+Latency benchmarks for airo-ipc 1.0 (iceoryx2 + Zenoh). Every benchmark runs the publisher (or
+server) in a spawned process.
 
 ```
 benchmarks/
 ├── _common.py                  percentiles, JSON output, transport pairs
-├── compare.py                  prints a side-by-side table from results/*.json
-├── plot.py                     plots from results/*.json
 ├── results/                    JSON output (gitignored)
-├── new_api/                    1.0
-│   ├── bench_pubsub_small.py   small message, Local() and Network()
-│   ├── bench_pubsub_image.py   480x640x3 image: receive() copy, receive_loan(), spin-polling
-│   └── bench_reqrep.py         service round trip
-└── old_api/                    0.3
-    ├── bench_dds_small.py      small message over DDS
-    └── bench_shm_image.py      480x640x3 image over SMReader/SMWriter
+└── new_api/
+    ├── bench_pubsub_small.py   small message, Local() and Network()
+    ├── bench_pubsub_image.py   480x640x3 image: receive() copy, receive_loan(), spin-polling
+    └── bench_reqrep.py         service round trip
 ```
 
 `Network()` runs over loopback TCP between two Zenoh sessions, with multicast off.
 
-## Run 1.0
+## Run
 
 ```bash
 uv sync --all-groups
@@ -30,27 +24,12 @@ uv run python benchmarks/new_api/bench_pubsub_image.py
 uv run python benchmarks/new_api/bench_reqrep.py
 ```
 
-## Run 0.3
+Each script prints a summary and writes JSON to `benchmarks/results/`.
 
-The two versions have different dependencies. Run the old scripts from this branch with the
-environment of a `master` worktree:
+## Results
 
-```bash
-git worktree add /tmp/airo-ipc-0.3 master
-cd /tmp/airo-ipc-0.3 && uv sync
-uv run python <this-repo>/benchmarks/old_api/bench_dds_small.py
-uv run python <this-repo>/benchmarks/old_api/bench_shm_image.py
-cd - && git worktree remove /tmp/airo-ipc-0.3
-```
-
-The results go to `<this-repo>/benchmarks/results/`. The 0.3 scripts print `KeyError` lines at
-exit; that is a known 0.3 resource-tracker problem and does not affect the numbers.
-
-## Compare
-
-```bash
-uv run python benchmarks/compare.py
-```
+The 0.3 numbers were measured once with the 0.3 benchmark scripts (removed after the comparison;
+see the git history of `benchmarks/old_api/` to run them again).
 
 Results on one Linux x86-64 machine (median / p95, µs):
 
