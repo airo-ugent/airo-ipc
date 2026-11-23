@@ -1,110 +1,71 @@
 # airo-ipc benchmarks
 
-Cross-version benchmark scripts that let you compare the v0.2.x CycloneDDS + SHM stack with the
-v1.0.0 iceoryx2 + Zenoh stack on the same machine, using equivalent workloads.
-
-## Layout
+Latency benchmarks for airo-ipc 1.0 (iceoryx2 + Zenoh), and the same workloads on 0.3
+(CycloneDDS + `multiprocessing.shared_memory`) for comparison. Every benchmark runs the
+publisher (or server) in a spawned process.
 
 ```
 benchmarks/
-├── _common.py                  helpers (percentiles, json writer)
-├── compare.py                  reads results/*.json and prints a side-by-side table
-├── results/                    JSON output dir (gitignored)
-├── new_api/
-│   ├── bench_pubsub_small.py   small struct, both transports
-│   ├── bench_pubsub_image.py   480x640x3 BGR image, both transports
-│   └── bench_reqrep.py         request/response round-trip
-└── old_api/
-    ├── bench_dds_small.py      small struct over DDS
-    └── bench_shm_image.py      480x640x3 BGR image over SMReader/SMWriter
+├── _common.py                  percentiles, JSON output, transport pairs
+├── compare.py                  prints a side-by-side table from results/*.json
+├── plot.py                     plots from results/*.json
+├── results/                    JSON output (gitignored)
+├── new_api/                    1.0
+│   ├── bench_pubsub_small.py   small message, Local() and Network()
+│   ├── bench_pubsub_image.py   480x640x3 image: receive() copy, receive_loan(), spin-polling
+│   └── bench_reqrep.py         service round trip
+└── old_api/                    0.3
+    ├── bench_dds_small.py      small message over DDS
+    └── bench_shm_image.py      480x640x3 image over SMReader/SMWriter
 ```
 
-## How to compare
+`Network()` runs over loopback TCP between two Zenoh sessions, with multicast off.
 
-The two stacks have incompatible dependencies (`cyclonedds-nightly` vs `iceoryx2 + zenoh`), so
-you can't have both installed at once. Run the benchmarks in two passes against the same
-working tree:
-
-### 1. Old API (v0.2.x) — DDS + cyclone_shm
+## Run 1.0
 
 ```bash
-# From a clean checkout
-git checkout master              # or: git checkout v0.2.1
-uv sync
-uv run python benchmarks/old_api/bench_dds_small.py
-uv run python benchmarks/old_api/bench_shm_image.py
-```
-
-This writes `benchmarks/results/old_pubsub_small.json` and `old_pubsub_image.json`.
-
-### 2. New API (v1.0.0) — iceoryx2 + Zenoh
-
-```bash
-# Same working tree, switch branches
-git checkout v1.0.0-prep         # or whatever the rewrite branch is called
-uv sync
+uv sync --all-groups
 uv run python benchmarks/new_api/bench_pubsub_small.py
 uv run python benchmarks/new_api/bench_pubsub_image.py
 uv run python benchmarks/new_api/bench_reqrep.py
 ```
 
-This writes `new_pubsub_small.json`, `new_pubsub_image.json`, `new_reqrep.json`.
+## Run 0.3
 
-### 3. Compare
+The two versions have different dependencies. Run the old scripts from this branch with the
+environment of a `master` worktree:
+
+```bash
+git worktree add /tmp/airo-ipc-0.3 master
+cd /tmp/airo-ipc-0.3 && uv sync
+uv run python <this-repo>/benchmarks/old_api/bench_dds_small.py
+uv run python <this-repo>/benchmarks/old_api/bench_shm_image.py
+cd - && git worktree remove /tmp/airo-ipc-0.3
+```
+
+The results go to `<this-repo>/benchmarks/results/`. The 0.3 scripts print `KeyError` lines at
+exit; that is a known 0.3 resource-tracker problem and does not affect the numbers.
+
+## Compare
 
 ```bash
 uv run python benchmarks/compare.py
 ```
 
-The JSON files survive branch switches because `results/` is gitignored, so the comparison
-table includes both runs.
+Results on one Linux x86-64 machine (median / p95, µs):
 
-### 4. Charts
+| Workload | 0.3 | 1.0 `Local()` | 1.0 `Network()` |
+|---|---|---|---|
+| Small message | 42 / 140 (spin-polling) | 40 / 177 | 97 / 371 |
+| Image, `receive()` copy | — | 283 / 431 | 747 / 1233 |
+| Image, `receive_loan()` | 186 / 237 (spin-polling) | 157 / 283 | 672 / 976 |
+| Image, `receive_loan()` spin-polling | — | 22 / 30 | (do not poll on Network) |
+| Service round trip | — | 27 / 33 | 81 / 122 |
 
-To render the JSON into PNG charts:
+Notes:
 
-```bash
-uv sync --group benchmark   # one-off: installs matplotlib
-uv run python benchmarks/plot.py
-```
-
-Output goes to `benchmarks/results/charts/`:
-
-- `pubsub_small.png` — small-struct latency, per-transport horizontal bars + p95/p99/max ticks
-- `pubsub_image.png` — same for the 480x640x3 image workload
-- `reqrep.png` — request/response round-trip
-- `overview.png` — median-only summary across all benchmarks (log scale)
-
-## What's measured
-
-- **Pub/sub latency**: time between the publisher's `monotonic_ns()` snapshot at send and the
-  subscriber's `monotonic_ns()` snapshot at receive. Subscriber spin-polls without sleep so the
-  measurement isn't contaminated by the poll cadence.
-- **Image throughput**: same as above, but with a 480x640x3 uint8 buffer (≈900 KB) representing a
-  webcam frame.
-- **Req/rep round-trip**: time between `req.request()` call and `req.request()` return. Includes
-  the requester's busy-poll cadence (default 100 µs) — that's what production code will see.
-
-## Interpreting results
-
-- iceoryx2 (LOCAL) should be in the tens of microseconds for small messages and one to two
-  hundred microseconds for a 900 KB image (dominated by the two memcpys that copy-on-receive
-  buys you for safety).
-- Zenoh (NETWORK) on loopback should be hundreds of microseconds for small messages and around
-  600–1000 µs for a 900 KB image (network stack + serialization).
-- Old SHM (cyclone_shm) is competitive with iceoryx2 for big buffers because both ultimately
-  hit the same Linux shared-memory primitives — but the iceoryx2 path is safer (no
-  resource-tracker hacks, no manual buffer rotation).
-- Old DDS is similar to Zenoh on loopback. The win from migrating isn't a latency cliff; it's
-  smaller dependencies, more patterns (req/rep, state), and uniform version checks.
-
-## Caveats
-
-- All benchmarks run on a single host. Cross-machine measurements need real network hardware
-  and aren't representative on loopback.
-- Numbers depend heavily on CPU governor, isolation, and load. Run on an idle machine; consider
-  `taskset` / `chrt` if you want stable absolute numbers.
-- Sleep granularity (1 ms on most Linux systems) means the spin-poll loop is essential. Without
-  it, every "no message ready" iteration would add 1 ms.
-- iceoryx2 0.9 + Zenoh 1.9 are pre-1.x for iceoryx2; absolute numbers will move as the libraries
-  evolve.
+- The 0.3 subscribers poll in a busy loop (one CPU core at 100 %). The 1.0 subscribers block
+  until an event arrives, except in the "spin-polling" row.
+- Most of the blocking 1.0 latency is the operating system waking the subscriber process.
+- Spin-polling on `Network()` is slow (4 ms) because the polling loop and Zenoh's receive thread
+  compete for the GIL.

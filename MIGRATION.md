@@ -1,24 +1,44 @@
-# Migrating from v0.2.x to v1.0.0
+# Migrating from airo-ipc 0.3 to 1.0
 
-v1.0.0 replaces the CycloneDDS + Python `multiprocessing.shared_memory` stack with iceoryx2
-(local zero-copy) + Zenoh (network). The user-facing API is small but breaking. This guide
-shows the before/after for the patterns you're likely using.
+1.0 replaces CycloneDDS + Python `multiprocessing.shared_memory` with iceoryx2 (`Local()`, on one
+host) and Zenoh (`Network(...)`, between hosts). The API changes completely, but it is smaller.
+This page maps every 0.3 concept to its 1.0 replacement.
 
-## Dependencies
+Why upgrade: 0.3 readers get views into memory that the writer reuses after three messages, so a
+slow reader can see a half-written frame; segment creation can race; a reader started before its
+writer waits forever; and a schema change between processes is silent corruption. 1.0 fixes all
+four by design.
 
-```diff
-- cyclonedds-nightly==2025.6.6
-+ iceoryx2>=0.8.1
-+ eclipse-zenoh>=1.7.2
-```
+## Concept map
+
+| 0.3 | 1.0 |
+|---|---|
+| `cyclonedds-nightly` dependency | `iceoryx2`, `eclipse-zenoh` (wheels, no daemon) |
+| `BaseIdl` (numpy fields only, shared memory) | `ipc.Message` |
+| `IdlStruct` (DDS messages) | `ipc.Message` (the same class works on both transports) |
+| `DomainParticipant` | not needed (a `Context` is created for you) |
+| `SMWriter(dp, topic, template)` | `ipc.publisher(topic, MsgType, ipc.Local())` |
+| `SMReader(dp, topic, template)` | `ipc.subscriber(topic, MsgType, ipc.Local())` |
+| `DDSWriter(dp, topic, IdlType)` | `ipc.publisher(topic, MsgType, ipc.Network(...))` |
+| `DDSReader(dp, topic, IdlType)` | `ipc.subscriber(topic, MsgType, ipc.Network(...))` |
+| `writer(msg)` | `pub.publish(msg)`, or `with pub.loan() as msg: ...` (zero-copy) |
+| `reader()` (returns a view that can change under you) | `sub.receive()` (an owned copy) or `with sub.receive_loan() as msg:` (a stable view) |
+| `reader.read_into(msg)` | `with sub.receive_loan() as view: np.copyto(dst, view.field)` |
+| `DDSReader.take()` | `sub.receive()` with `qos=ipc.Queue(n)` |
+| `DDSReader.__call__()` (latest without consuming) | `sub.receive()` with `qos=ipc.Latest()` |
+| `WaitingForFirstMessageException` | `receive()` returns `None` |
+| `nr_of_buffers` | gone: iceoryx2 tracks who holds which buffer |
+| (none) | services: `ipc.server(...)` / `ipc.client(...).call(...)` |
+| `airo_ipc.framework.Node` | `airo_ipc.framework.Worker` |
+| `IpcKind.SHARED_MEMORY` / `IpcKind.DDS` | `ipc.Local()` / `ipc.Network(...)` |
 
 ## Message definitions
 
-`BaseIdl` and `IdlStruct` are gone. Use `Buffer` (a `ctypes.Structure` subclass) for everything.
-
-**Before** — separate types for DDS structs and shared-memory buffers:
+**0.3**: two kinds of types.
 
 ```python
+from dataclasses import dataclass, field
+import numpy as np
 from cyclonedds.idl import IdlStruct
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl
 
@@ -31,174 +51,123 @@ class ResolutionIdl(IdlStruct):
 
 @dataclass
 class WebcamFrame(BaseIdl):
-    rgb: np.ndarray = np.empty((480, 640, 3), dtype=np.uint8)
+    rgb: np.ndarray = field(default_factory=lambda: np.zeros((480, 640, 3), dtype=np.uint8))
 ```
 
-**After** — one `Buffer` base for both transports, dataclass-shaped annotations:
+**1.0**: one base class; scalars and arrays can be mixed.
 
 ```python
-import ctypes
 import numpy as np
-from airo_ipc import Buffer
+from numpy.typing import NDArray
+import airo_ipc as ipc
 
 
-class Resolution(Buffer):
-    _version_ = 1
-    width: ctypes.c_int32
-    height: ctypes.c_int32
+class Resolution(ipc.Message):
+    width: ipc.i32
+    height: ipc.i32
 
 
-class WebcamFrame(Buffer):
-    _version_ = 1
-    rgb: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
+class WebcamFrame(ipc.Message):
+    stamp: float
+    rgb: NDArray[np.uint8] = ipc.Array((480, 640, 3), np.uint8)
 ```
 
-Annotation rules:
-
-- `float` → `c_double`, `int` → `c_int64`, `bool` → `c_bool`. Use a `ctypes.c_*` type
-  directly if you need a narrower width.
-- `np.ndarray` fields require a class-level default of `np.zeros(shape, dtype=...)` —
-  the metaclass reads the shape and dtype from it. The default is consumed during class
-  construction and replaced by a property that returns a numpy view over shared memory.
-- Scalar fields may have a default (`x: float = 1.5`) which is applied when an instance
-  is constructed without that kwarg.
-- For runtime-determined shapes (e.g. a queried camera resolution), use the factory
-  form `buffer_from_arrays("Frame", version=1, rgb=np.zeros(shape, dtype=...))`.
-
-The explicit form is still supported (e.g. for porting v0.2.x code in bulk):
+Shapes known only at runtime: declare `None` dimensions and call `with_shapes`:
 
 ```python
-class Resolution(Buffer):
-    _version_ = 1
-    _fields_ = [("width", ctypes.c_int32), ("height", ctypes.c_int32)]
+class WebcamFrame(ipc.Message):
+    rgb: NDArray[np.uint8] = ipc.Array((None, None, 3), np.uint8)
+
+Frame = WebcamFrame.with_shapes(rgb=(height, width, 3))
 ```
 
-You can't mix `_fields_` and annotations in the same class — pick one.
+## Shared-memory streaming
 
-Bump `_version_` whenever you change the layout so old subscribers raise
-`IncompatibleVersionError` instead of silently reading corrupt data.
-
-## Picking a transport
-
-`IpcKind.DDS` and `IpcKind.SHARED_MEMORY` are gone. Use `Transport.NETWORK` and `Transport.LOCAL`:
-
-```diff
-- from airo_ipc.framework.framework import IpcKind
-- IpcKind.DDS              # cross-machine
-- IpcKind.SHARED_MEMORY    # same-machine, zero-copy
-+ from airo_ipc import Transport
-+ Transport.NETWORK        # cross-machine (Zenoh)
-+ Transport.LOCAL          # same-machine, zero-copy (iceoryx2)
-```
-
-## Publishers and subscribers
-
-Direct API (no framework):
-
-**Before**:
+**0.3**
 
 ```python
 from cyclonedds.domain import DomainParticipant
-from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
 from airo_ipc.cyclone_shm.patterns.sm_writer import SMWriter
+from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader
 
 dp = DomainParticipant()
 writer = SMWriter(dp, "frame", WebcamFrame())
-writer(WebcamFrame(rgb=img))
-```
-
-**After**:
-
-```python
-from airo_ipc import Transport, create_publisher
-
-pub = create_publisher("frame", WebcamFrame, Transport.LOCAL)
 msg = WebcamFrame()
-msg.rgb[:] = img
-pub.publish(msg)
+msg.rgb[:] = image
+writer(msg)
+
+reader = SMReader(dp, "frame", WebcamFrame())   # blocks forever until a writer exists
+frame = reader()                                 # a view: copy it at once or risk tearing
+rgb = frame.rgb.copy()
 ```
 
-## Worker (formerly Node)
-
-The `Node` class is renamed to `Worker` to avoid the name clash with `iceoryx2.Node`. The
-`_subscribe` callback argument is now keyword-only.
-
-**Before**:
+**1.0**
 
 ```python
-from airo_ipc.framework.node import Node
-from airo_ipc.framework.framework import IpcKind
+import airo_ipc as ipc
 
+pub = ipc.publisher("frame", WebcamFrame, ipc.Local())
+with pub.loan() as msg:          # writes straight into shared memory
+    msg.rgb[:] = image
 
-class MyNode(Node):
-    def _setup(self):
-        self._register_publisher("frame", WebcamFrame(), IpcKind.SHARED_MEMORY)
-        self._subscribe("resolution", ResolutionIdl, IpcKind.DDS, self._on_resolution)
-
-    def _on_resolution(self, msg):
-        ...
+sub = ipc.subscriber("frame", WebcamFrame, ipc.Local())   # does not need a publisher yet
+frame = sub.receive(timeout=1.0)  # an owned copy, or None
 ```
 
-**After**:
+## DDS messages
+
+**0.3**
 
 ```python
-from airo_ipc import Transport
-from airo_ipc.framework import Worker
+from airo_ipc.cyclone_shm.patterns.ddswriter import DDSWriter
+from airo_ipc.cyclone_shm.patterns.ddsreader import DDSReader
 
-
-class MyWorker(Worker):
-    def _setup(self):
-        self._register_publisher("frame", WebcamFrame, Transport.LOCAL)
-        self._subscribe("resolution", Resolution, Transport.NETWORK,
-                        callback=self._on_resolution)
-
-    def _on_resolution(self, msg):
-        ...
+writer = DDSWriter(dp, "resolution", ResolutionIdl)
+writer(ResolutionIdl(width=640, height=480))
+reader = DDSReader(dp, "resolution", ResolutionIdl)
+resolution = reader()
 ```
 
-Note: `_register_publisher` now takes a Buffer **class** (not an instance, as `SMWriter` did).
-`_subscribe` takes `callback=` as a keyword-only argument.
-
-## New patterns
-
-v1.0.0 also exposes request/response and state writer/reader patterns that didn't exist before:
+**1.0**
 
 ```python
-from airo_ipc import create_requester, create_responder, create_state_writer, create_state_reader
-
-# RPC-style
-responder = create_responder("control/move_to", MoveRequest, MoveResponse, Transport.LOCAL)
-responder.listen(handler)
-
-requester = create_requester("control/move_to", MoveRequest, MoveResponse, Transport.LOCAL)
-reply = requester.request(MoveRequest(x=1.0, y=2.0))
-
-# Latest-known-value
-writer = create_state_writer("robot/pose", PoseBuffer, Transport.LOCAL)
-writer.set(PoseBuffer(...))
-
-reader = create_state_reader("robot/pose", PoseBuffer, Transport.LOCAL)
-state = reader.get()
+pub = ipc.publisher("resolution", Resolution, ipc.Network(), latched=True)
+pub.publish(Resolution(width=640, height=480))
+sub = ipc.subscriber("resolution", Resolution, ipc.Network())
+resolution = sub.receive(timeout=5.0)   # latched: also arrives if the subscriber starts later
 ```
 
-## Sample-lifetime semantics
+On one host you can use `ipc.Local()` for small messages too; it is faster than `Network()`.
 
-`SMReader` in v0.2.x intentionally returned references into shared memory (no copy), with the
-caveat that you had to `.copy()` if you wanted to retain the data. In v1.0.0 the default
-`receive()` **copies** — you own what you get back and can use it freely. If you need the
-zero-copy fast path for high-throughput streaming, see the backend-specific notes.
+## Node → Worker
 
-## Versioning across the wire
+| 0.3 `Node` | 1.0 `Worker` |
+|---|---|
+| `Node(update_frequency, verbose)` | `Worker(update_frequency, verbose)` |
+| `_register_publisher(topic, idl, IpcKind.X)` | `_register_publisher(topic, MsgType, transport, latched=False)` (returns the publisher) |
+| `_publish(topic, value)` | `_publish(topic, msg)`, or `self._publisher(topic).loan()` |
+| `_subscribe(topic, idl, IpcKind.X, callback)` | `_subscribe(topic, MsgType, transport, callback=..., qos=...)` |
+| (none) | `_serve(topic, Req, Rep, transport, handler)`, `_client(topic, Req, Rep, transport)` |
+| `_setup` / `_step` / `_teardown` / `stop()` | unchanged |
 
-`_ipc_version` is automatically prepended to every Buffer and checked on receive. If a publisher
-and subscriber disagree on `_version_`, you get `IncompatibleVersionError` instead of silent
-data corruption. This applies to all six patterns on both transports.
+Differences:
 
-## Things removed
+- The transport is a required argument; there is no default.
+- Registering the same topic twice raises `ValueError` (0.3 logged a warning and ignored it).
+- The callback receives an owned copy of each message; several messages per loop iteration are
+  delivered when a `Queue` QoS is used.
+- `_teardown()` also runs when `_setup()` or `_step()` raises.
 
-- `airo_ipc.cyclone_shm` package
-- `airo_ipc.framework.framework.IpcKind`
-- `airo_ipc.framework.node.Node` (renamed to `Worker`)
-- `BaseIdl` / `BaseIDL`
-- `SMReader.read_into` (use `receive()` directly; allocations are amortized differently)
-- `WaitingForFirstMessageException` (subscribers return `None` instead)
+The spawn rule is unchanged: create every `multiprocessing` object that you share with a Worker
+from `multiprocessing.get_context("spawn")`.
+
+## Behaviour changes to check
+
+- **Python 3.11+** (0.3: 3.9+).
+- **Copies.** `receive()` returns a copy. Use `receive_loan()` where the copy matters.
+- **Schema.** Changing a message class (field, type, shape, order or class name) makes old and
+  new processes incompatible; they raise `SchemaMismatchError` instead of exchanging garbage.
+  Restart all processes that use the topic together.
+- **Topic names** use letters, digits, `_`, `-`, `.` and `/` separators.
+- **Logging** uses the standard `logging` module (logger name `"airo_ipc"`); loguru is no longer
+  a dependency.

@@ -45,8 +45,16 @@ _RESPONSE_EVENT_SUFFIX = "/@rep"
 _LATCH_REFRESH_SECONDS = 0.05
 
 
-def _duration(seconds: float) -> Any:
-    return iox2.Duration.from_secs_f64(max(0.0, seconds))
+def _wait(listener: Any, seconds: float) -> None:
+    """Wait for events, at most ``seconds``. Consumes the pending events.
+
+    iceoryx2 0.10.1 treats ``timed_wait(Duration 0)`` as "block forever", so a zero timeout
+    uses the non-blocking ``try_wait()``.
+    """
+    if seconds <= 0:
+        listener.try_wait()
+    else:
+        listener.timed_wait(iox2.Duration.from_secs_f64(seconds))
 
 
 def _open_error(what: str, topic: str, error: Exception) -> AiroIpcError:
@@ -339,7 +347,7 @@ class Iox2SubscriberPort(SubscriberPort):
         holder.delete()
 
     def wait(self, timeout: float) -> None:
-        self._listener.timed_wait(_duration(timeout))
+        _wait(self._listener, timeout)
 
     @property
     def has_publishers(self) -> bool:
@@ -459,7 +467,7 @@ class Iox2ClientPort(ClientPort):
                     raise TimeoutError(
                         f"no response from service '{self._topic}' within {timeout} s"
                     )
-            self._listener.timed_wait(_duration(wait))
+            _wait(self._listener, wait)
 
     @property
     def has_server(self) -> bool:
@@ -509,7 +517,7 @@ class Iox2ServerPort(ServerPort):
     def receive(self, timeout: float) -> tuple[Message, Any] | None:
         active = self._server.receive()
         if active is None:
-            self._listener.timed_wait(_duration(timeout))
+            _wait(self._listener, timeout)
             active = self._server.receive()
             if active is None:
                 return None

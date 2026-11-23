@@ -1,0 +1,19 @@
+name: black
+
+on:
+  push:
+    branches: ["master", "v1.0.0-prep"]
+  pull_request:
+    branches: ["master", "v1.0.0-prep"]
+
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --all-groups --python 3.11
+      - name: Run black
+        run: uv run black --check airo_ipc tests benchmarks examples

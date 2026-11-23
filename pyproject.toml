@@ -9,32 +9,42 @@ authors = [
     { name = "Matthijs Biondina", email = "matthijs.biondina@ugent.be" },
     { name = "Mathieu De Coster", email = "mathieu.decoster@ugent.be" },
 ]
-description = "IPC framework for AIRO."
+description = "One message class, two transports: zero-copy iceoryx2 shared memory on one host, Zenoh between hosts. Publish/subscribe and services."
 readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["ipc", "robotics", "shared-memory", "zero-copy", "iceoryx2", "zenoh", "pubsub"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
 ]
 
 dependencies = [
     "eclipse-zenoh>=1.10.2,<2",
     "iceoryx2>=0.10.1,<0.11",
-    "loguru>=0.7.2",
-    "numpy",
+    "numpy>=1.26",
 ]
 
 [project.urls]
 Homepage = "https://github.com/airo-ugent/airo-ipc"
 Issues = "https://github.com/airo-ugent/airo-ipc/issues"
 
-[tools.setuptools]
-packages = ["airo_ipc"]
+[tool.setuptools.packages.find]
+include = ["airo_ipc*"]
+
+[tool.setuptools.package-data]
+airo_ipc = ["py.typed"]
 
 [dependency-groups]
 benchmark = [
-    "eclipse-zenoh>=1.7.2",
     "matplotlib>=3.9.4",
     "psutil>=7.2.2",
 ]

@@ -1,64 +1,80 @@
 # Worker framework
 
-The `Worker` class is a convenience for long-running robotics processes that:
+`Worker` is an optional convenience for long-running robotics processes that:
 
-1. Tick at a fixed rate (e.g. 30 Hz for a camera, 200 Hz for a control loop).
-2. Publish and subscribe to typed messages over iceoryx2 or Zenoh.
-3. Have a clear setup → step-loop → teardown lifecycle.
+1. run at a fixed rate (for example 30 Hz for a camera, 200 Hz for a control loop),
+2. publish, subscribe and serve services over `Local()` or `Network(...)`,
+3. have a clear setup → loop → teardown lifecycle.
 
-It's a `multiprocessing.SpawnProcess` subclass: each `Worker` runs in its own OS process. Bundling
-process lifecycle with IPC endpoints is deliberate — iceoryx2 Nodes and Zenoh Sessions must be
-created in the process that uses them. `Worker` enforces this by construction rather than by
-documentation.
+A `Worker` is a `multiprocessing` spawn process: each Worker runs in its own OS process. Its
+endpoints are created in that process, because iceoryx2 nodes and Zenoh sessions do not survive
+`fork`.
 
 ## Usage
 
-Subclass `Worker` and implement three methods:
-
 ```python
-from airo_ipc import Buffer, Transport
+import airo_ipc as ipc
 from airo_ipc.framework import Worker
 
 
-class MyWorker(Worker):
-    def _setup(self):
-        """Runs once in the child process before the step loop starts.
-        Register publishers and subscribers here."""
-        self._register_publisher("my/topic", MyBuffer, Transport.LOCAL)
-        self._subscribe("other/topic", OtherBuffer, Transport.LOCAL,
-                        callback=self._on_other)
+class Value(ipc.Message):
+    x: float
 
-    def _step(self):
-        """Runs repeatedly at `update_frequency` Hz."""
-        msg = MyBuffer(value=42)
-        self._publish("my/topic", msg)
 
-    def _teardown(self):
-        """Runs once when the worker is stopping."""
-        pass
+class Doubler(Worker):
+    def _setup(self) -> None:
+        """Runs once in the child process. Create endpoints here."""
+        self._register_publisher("doubled", Value, ipc.Local())
+        self._subscribe("values", Value, ipc.Local(), callback=self._on_value)
+        self._serve("double", Value, Value, ipc.Local(), lambda v: Value(x=2 * v.x))
 
-    def _on_other(self, msg: OtherBuffer):
-        """Subscription callbacks run before each _step()."""
-        pass
+    def _on_value(self, msg: Value) -> None:
+        self._publish("doubled", Value(x=2 * msg.x))
+
+    def _step(self) -> None:
+        """Runs at update_frequency Hz, after the callbacks and service requests."""
+
+    def _teardown(self) -> None:
+        """Runs once when the worker stops, also after an exception."""
 
 
 if __name__ == "__main__":
-    worker = MyWorker(update_frequency=30, verbose=True)
+    worker = Doubler(update_frequency=100.0, verbose=True)
     worker.start()
+    ...
+    worker.stop()
     worker.join()
 ```
 
-## What Worker is and isn't responsible for
+## Loop
 
-**Is**: process lifecycle (start/stop), fixed-rate step loop, owns publishers/subscribers, dispatches
-incoming messages to callbacks, warns on tick overruns.
+Each iteration:
 
-**Is not**: discovery (transports do that), graph orchestration (Workers don't know about each other),
-crash supervision (parent process's job), threading inside `_step()` (single-threaded by design).
+1. For every subscription, deliver all received messages to the callback (with the default
+   `Latest()` QoS, that is at most the newest one).
+2. Handle all pending service requests.
+3. Call `_step()`.
+4. Sleep until the next period. If the iteration overran, the loop continues at once (it does not
+   try to catch up); with `verbose=True` it logs the overrun.
 
-If you need event-driven (not periodic) behavior, use the factory functions
-(`create_publisher`, `create_subscriber`, etc.) directly instead of `Worker`.
+Everything runs on one thread, so callbacks, handlers and `_step()` need no locks.
 
-## Examples
+## Endpoint helpers
 
-See `examples/framework/`.
+| Helper | Returns | Notes |
+|---|---|---|
+| `_register_publisher(topic, MsgType, transport, latched=False)` | `Publisher` | use `.loan()` on the result for zero-copy writes |
+| `_publish(topic, msg)` | — | publish on a registered topic |
+| `_publisher(topic)` | `Publisher` | the publisher of a registered topic |
+| `_subscribe(topic, MsgType, transport, callback=..., qos=Latest())` | `Subscriber` | a callback may subscribe to more topics |
+| `_serve(topic, Req, Rep, transport, handler)` | `Server` | handled on the loop thread |
+| `_client(topic, Req, Rep, transport)` | `Client` | `call()` blocks the loop; prefer `call_async()` |
+
+## Rules
+
+- Share only spawn-context `multiprocessing` objects with a Worker:
+  `multiprocessing.get_context("spawn").Event()`. Objects from the default (fork) context fail
+  silently.
+- The Worker class must be importable by the child process (define it at module level, and start
+  it under `if __name__ == "__main__":`).
+- A Worker is not required: endpoints work in any process, see `examples/framework/airo_mono.py`.

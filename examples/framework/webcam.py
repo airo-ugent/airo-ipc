@@ -1,121 +1,108 @@
-"""This script reads from the webcam with OpenCV and publishes the images to a topic over shared memory.
-Another process, started from this same script, subscribes to the images and shows them in a window.
+"""Read webcam frames with OpenCV in one process and show them in another.
 
-This script requires that you have OpenCV installed, you can do this with: `pip install opencv-contrib-python`.
+- Frames go over ``Local()`` (iceoryx2 zero-copy shared memory), written in place with
+  ``loan()``.
+- The resolution goes over ``Network()`` (Zenoh) as a *latched* topic: a subscriber that starts
+  later still receives it. The subscriber needs it to build the frame type, because the frame
+  shape is only known at runtime.
+
+Requires OpenCV: ``uv add opencv-contrib-python`` (or ``pip install opencv-contrib-python``).
+Run: ``uv run python examples/framework/webcam.py``; press "q" in the window to quit.
 """
-import ctypes
+
+from __future__ import annotations
+
+import logging
 from typing import Final
 
 import cv2
 import numpy as np
-from loguru import logger
+from numpy.typing import NDArray
 
-from airo_ipc import Buffer, Transport, buffer_from_arrays
+import airo_ipc as ipc
 from airo_ipc.framework import Worker
 
-TOPIC_RESOLUTION: Final[str] = "resolution"
-TOPIC_BGR: Final[str] = "frame"
+logger = logging.getLogger("webcam")
+
+TOPIC_RESOLUTION: Final[str] = "webcam/resolution"
+TOPIC_BGR: Final[str] = "webcam/bgr"
 
 
-class Resolution(Buffer):
-    """We send the webcam resolution over the network. Two int32 fields via the annotation DSL."""
-    _version_ = 1
-    width: ctypes.c_int32
-    height: ctypes.c_int32
+class Resolution(ipc.Message):
+    width: ipc.i32
+    height: ipc.i32
 
 
-def make_frame_buffer(width: int, height: int) -> type[Buffer]:
-    """The webcam resolution is only known at runtime, so we use the factory form.
+class WebcamFrame(ipc.Message):
+    """The height and width are only known at runtime: see WebcamFrame.with_shapes(...)."""
 
-    For statically-known shapes you can use the DSL instead:
-
-        class FrameBuffer(Buffer):
-            _version_ = 1
-            bgr: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
-    """
-    return buffer_from_arrays(
-        "WebcamFrame",
-        bgr=np.zeros((height, width, 3), dtype=np.uint8),
-    )
+    bgr: NDArray[np.uint8] = ipc.Array((None, None, 3), np.uint8)
 
 
 class WebcamPublisher(Worker):
-    """The publisher will open the webcam and publish the resolution and frame in a loop."""
-    def _setup(self):
-        logger.info("Opening webcam.")
+    def _setup(self) -> None:
+        logger.info("Opening the webcam.")
         self._camera = cv2.VideoCapture(0)
-
-        logger.info("Getting resolution.")
         width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_type = WebcamFrame.with_shapes(bgr=(height, width, 3))
 
-        self._FrameBuffer = make_frame_buffer(width, height)
+        resolution = self._register_publisher(
+            TOPIC_RESOLUTION, Resolution, ipc.Network(), latched=True
+        )
+        resolution.publish(Resolution(width=width, height=height))
+        self._frames = self._register_publisher(TOPIC_BGR, frame_type, ipc.Local())
 
-        logger.info("Registering publishers.")
-        self._register_publisher(TOPIC_RESOLUTION, Resolution, Transport.NETWORK)
-        self._register_publisher(TOPIC_BGR, self._FrameBuffer, Transport.LOCAL)
+    def _step(self) -> None:
+        with self._frames.loan() as frame:
+            ok = self._camera.read(frame.bgr)[
+                0
+            ]  # OpenCV writes straight into shared memory
+            if not ok:
+                raise RuntimeError("could not read a frame from the webcam")
 
-        self._resolution = Resolution(width=width, height=height)
-
-    def _step(self):
-        ret, frame = self._camera.read()
-
-        if not ret:
-            logger.error("Could not read frame from webcam. Stopping publisher.")
-            self.stop()
-            return
-
-        self._publish(TOPIC_RESOLUTION, self._resolution)
-
-        msg = self._FrameBuffer()
-        msg.bgr[:] = frame
-        self._publish(TOPIC_BGR, msg)
-
-    def _teardown(self):
+    def _teardown(self) -> None:
         self._camera.release()
 
 
-class WebcamSubscriber(Worker):
-    """The subscriber will show the frames in a window."""
-    def _setup(self):
-        logger.info("Creating webcam window.")
+class WebcamViewer(Worker):
+    def _setup(self) -> None:
         cv2.namedWindow("Webcam", cv2.WINDOW_NORMAL)
-        logger.info("Subscribing to resolution messages.")
-        self._subscribe(TOPIC_RESOLUTION, Resolution, Transport.NETWORK, callback=self._on_receive_resolution)
+        self._subscribe(
+            TOPIC_RESOLUTION, Resolution, ipc.Network(), callback=self._on_resolution
+        )
 
-    def _on_receive_resolution(self, resolution: Resolution):
+    def _on_resolution(self, resolution: Resolution) -> None:
         if TOPIC_BGR in self._subscribers:
             return
+        logger.info(
+            "Resolution %dx%d: subscribing to frames.",
+            resolution.width,
+            resolution.height,
+        )
+        frame_type = WebcamFrame.with_shapes(
+            bgr=(resolution.height, resolution.width, 3)
+        )
+        self._subscribe(TOPIC_BGR, frame_type, ipc.Local(), callback=self._on_frame)
 
-        FrameBuffer = make_frame_buffer(resolution.width, resolution.height)
-        logger.info("Received resolution message. Subscribing to BGR messages.")
-        self._subscribe(TOPIC_BGR, FrameBuffer, Transport.LOCAL, callback=self._on_receive_frame)
-
-    def _on_receive_frame(self, frame):
+    def _on_frame(self, frame: WebcamFrame) -> None:
         cv2.imshow("Webcam", frame.bgr)
-        key = cv2.waitKey(1)
-        if key == ord("q"):
-            logger.info("Closing webcam window.")
+        if cv2.waitKey(1) == ord("q"):
             self.stop()
 
-    def _step(self):
+    def _step(self) -> None:
         pass
 
-    def _teardown(self):
+    def _teardown(self) -> None:
         cv2.destroyAllWindows()
 
 
-if __name__ == '__main__':
-    logger.info("Creating publisher.")
-    publisher = WebcamPublisher(20, True)
-    logger.info("Starting publisher.")
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    publisher = WebcamPublisher(update_frequency=30, verbose=True)
+    viewer = WebcamViewer(update_frequency=60)
     publisher.start()
-
-    logger.info("Creating subscriber.")
-    subscriber = WebcamSubscriber(20, True)
-    logger.info("Starting subscriber.")
-    subscriber.start()
-
-    logger.info("Joining subscriber: will quit when the user pressed 'q' with the CV2 window in focus.")
-    subscriber.join()
+    viewer.start()
+    viewer.join()  # returns when "q" is pressed in the window
     publisher.stop()
+    publisher.join()

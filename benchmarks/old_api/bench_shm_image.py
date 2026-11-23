@@ -19,7 +19,10 @@ from _common import print_summary, summarize, write_result  # noqa: E402
 from cyclonedds.domain import DomainParticipant  # noqa: E402
 
 from airo_ipc.cyclone_shm.idl_shared_memory.base_idl import BaseIdl  # noqa: E402
-from airo_ipc.cyclone_shm.patterns.sm_reader import SMReader, WaitingForFirstMessageException  # noqa: E402
+from airo_ipc.cyclone_shm.patterns.sm_reader import (
+    SMReader,
+    WaitingForFirstMessageException,
+)  # noqa: E402
 from airo_ipc.cyclone_shm.patterns.sm_writer import SMWriter  # noqa: E402
 
 H, W = 480, 640

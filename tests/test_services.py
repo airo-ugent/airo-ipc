@@ -131,6 +131,14 @@ def test_manual_spin(pair: Pair, topic: str) -> None:
     assert future.result(timeout=5).total == 9.0
 
 
+def test_spin_once_zero_timeout_returns_at_once(pair: Pair, topic: str) -> None:
+    server, _ = serve(pair, topic, spin=False)
+    start = time.monotonic()
+    for _ in range(10):
+        assert server.spin_once(0.0) is False
+    assert time.monotonic() - start < 0.5
+
+
 def test_spin_once_not_allowed_with_background_thread(pair: Pair, topic: str) -> None:
     server, _ = serve(pair, topic)
     with pytest.raises(RuntimeError, match="spin=True"):

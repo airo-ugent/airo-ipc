@@ -53,7 +53,7 @@ def compare_pubsub_small() -> None:
         return
     section("Small-message pub/sub latency (us)")
     if old is not None:
-        row("OLD / DDS (network)", old["results"].get("network"))
+        row("OLD / DDS (spin-poll)", old["results"].get("network"))
     if new is not None:
         row("NEW / LOCAL (iox2)", new["results"].get("local"))
         row("NEW / NETWORK (zenoh)", new["results"].get("network"))
@@ -66,10 +66,14 @@ def compare_pubsub_image() -> None:
         return
     section("480x640x3 BGR image pub/sub latency (us)")
     if old is not None:
-        row("OLD / SHM (local)", old["results"].get("local"))
+        row("OLD / SHM (spin-poll)", old["results"].get("local"))
     if new is not None:
-        row("NEW / LOCAL (iox2)", new["results"].get("local"))
-        row("NEW / NETWORK (zenoh)", new["results"].get("network"))
+        results = new["results"]
+        row("NEW / LOCAL copy", results.get("local_copy"))
+        row("NEW / LOCAL loan", results.get("local_loan"))
+        row("NEW / LOCAL loan spin", results.get("local_loan_spin"))
+        row("NEW / NETWORK copy", results.get("network_copy"))
+        row("NEW / NETWORK loan", results.get("network_loan"))
 
 
 def compare_reqrep() -> None:
@@ -77,7 +81,7 @@ def compare_reqrep() -> None:
     if new is None:
         return
     section("Request/response round-trip latency (us)")
-    print("  (no equivalent in v0.2.x — patterns were pub/sub only)")
+    print("  (no equivalent in 0.3 — patterns were pub/sub only)")
     row("NEW / LOCAL (iox2)", new["results"].get("local"))
     row("NEW / NETWORK (zenoh)", new["results"].get("network"))
 

@@ -55,3 +55,30 @@ def print_summary(name: str, summary: dict) -> None:
     print(f"  stdev  = {summary['stdev']:.2f} {unit}")
     print(f"  min    = {summary['min']:.2f} {unit}")
     print(f"  max    = {summary['max']:.2f} {unit}")
+
+
+def transport_pairs() -> dict:
+    """(publisher-side, subscriber-side) transports for the new API.
+
+    Network uses two Zenoh sessions over loopback TCP with multicast off, like the tests.
+    """
+    import socket
+    import uuid
+
+    import airo_ipc as ipc
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    namespace = f"bench{uuid.uuid4().hex[:8]}"
+    return {
+        "local": (ipc.Local(), ipc.Local()),
+        "network": (
+            ipc.Network(
+                listen=f"tcp/127.0.0.1:{port}", multicast=False, namespace=namespace
+            ),
+            ipc.Network(
+                connect=f"tcp/127.0.0.1:{port}", multicast=False, namespace=namespace
+            ),
+        ),
+    }

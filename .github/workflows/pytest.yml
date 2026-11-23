@@ -1,0 +1,25 @@
+name: pytest
+
+on:
+  push:
+    branches: ["master", "v1.0.0-prep"]
+  pull_request:
+    branches: ["master", "v1.0.0-prep"]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported Python versions: every version that is not end-of-life.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --all-groups --python ${{ matrix.python-version }}
+      - name: Run pytest
+        # The tests use Network() over loopback with multicast off, so they need no network setup.
+        run: uv run --python ${{ matrix.python-version }} pytest -q

@@ -22,10 +22,10 @@ CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Consistent color per transport across all charts.
 COLOR = {
-    "OLD / DDS (network)": "#a0522d",       # sienna — old network
-    "OLD / SHM (local)":   "#cd853f",       # peru — old local
-    "NEW / LOCAL (iox2)":  "#1f77b4",       # blue — new local
-    "NEW / NETWORK (zenoh)": "#ff7f0e",     # orange — new network
+    "OLD / DDS (network)": "#a0522d",  # sienna — old network
+    "OLD / SHM (local)": "#cd853f",  # peru — old local
+    "NEW / LOCAL (iox2)": "#1f77b4",  # blue — new local
+    "NEW / NETWORK (zenoh)": "#ff7f0e",  # orange — new network
 }
 
 
@@ -47,10 +47,15 @@ def _rows_for(name: str) -> list[tuple[str, dict]]:
         if "network" in old.get("results", {}):
             rows.append(("OLD / DDS (network)", old["results"]["network"]))
     if new is not None:
-        if "local" in new.get("results", {}):
-            rows.append(("NEW / LOCAL (iox2)", new["results"]["local"]))
-        if "network" in new.get("results", {}):
-            rows.append(("NEW / NETWORK (zenoh)", new["results"]["network"]))
+        results = new.get("results", {})
+        # The image benchmark reports several read modes; plot the zero-copy read on Local()
+        # and the copy on Network() (both blocking, no spin-polling).
+        local = results.get("local") or results.get("local_loan")
+        network = results.get("network") or results.get("network_copy")
+        if local is not None:
+            rows.append(("NEW / LOCAL (iox2)", local))
+        if network is not None:
+            rows.append(("NEW / NETWORK (zenoh)", network))
     return rows
 
 
@@ -98,9 +103,15 @@ def plot_benchmark(name: str, title: str, subtitle: str = "") -> Path | None:
     # Legend for the marker scheme (bar color is per-row, so we use neutral grey for the median entry).
     legend_elements = [
         plt.Line2D([0], [0], color="#888", lw=8, label="median (bar)"),
-        plt.Line2D([0], [0], marker="|", color="#444", markersize=14, lw=0, label="p95"),
-        plt.Line2D([0], [0], marker="|", color="#c33", markersize=14, lw=0, label="p99"),
-        plt.Line2D([0], [0], marker="|", color="#000", markersize=10, lw=0, label="max"),
+        plt.Line2D(
+            [0], [0], marker="|", color="#444", markersize=14, lw=0, label="p95"
+        ),
+        plt.Line2D(
+            [0], [0], marker="|", color="#c33", markersize=14, lw=0, label="p99"
+        ),
+        plt.Line2D(
+            [0], [0], marker="|", color="#000", markersize=10, lw=0, label="max"
+        ),
     ]
     ax.legend(handles=legend_elements, loc="lower right", fontsize=8, framealpha=0.9)
 
@@ -141,7 +152,10 @@ def plot_overview() -> Path | None:
     fig, ax = plt.subplots(figsize=(10, 5))
     bar_width = 0.18
     bench_centers = np.arange(len(data))
-    offset_map = {lab: (i - (len(all_labels) - 1) / 2) * bar_width for i, lab in enumerate(all_labels)}
+    offset_map = {
+        lab: (i - (len(all_labels) - 1) / 2) * bar_width
+        for i, lab in enumerate(all_labels)
+    }
 
     for label in all_labels:
         ys = []
@@ -152,7 +166,9 @@ def plot_overview() -> Path | None:
             d = dict(data[bench_name])
             if label in d:
                 ys.append(d[label])
-                xs.append(bench_centers[list(data).index(bench_name)] + offset_map[label])
+                xs.append(
+                    bench_centers[list(data).index(bench_name)] + offset_map[label]
+                )
         if ys:
             ax.bar(xs, ys, width=bar_width, color=COLOR.get(label, "#666"), label=label)
 
@@ -160,7 +176,11 @@ def plot_overview() -> Path | None:
     ax.set_xticklabels([bn for bn in data])
     ax.set_yscale("log")
     ax.set_ylabel("median latency (µs)  —  log scale")
-    ax.set_title("airo-ipc benchmark overview — median latency per transport", fontsize=12, weight="bold")
+    ax.set_title(
+        "airo-ipc benchmark overview — median latency per transport",
+        fontsize=12,
+        weight="bold",
+    )
     ax.legend(loc="upper left", fontsize=9)
     ax.grid(axis="y", which="both", alpha=0.3)
     ax.set_axisbelow(True)
