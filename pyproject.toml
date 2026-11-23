@@ -11,7 +11,7 @@ authors = [
 ]
 description = "IPC framework for AIRO."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -19,8 +19,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "eclipse-zenoh>=1.9.0",
-    "iceoryx2>=0.9.0",
+    "eclipse-zenoh>=1.10.2,<2",
+    "iceoryx2>=0.10.1,<0.11",
     "loguru>=0.7.2",
     "numpy",
 ]
@@ -39,6 +39,7 @@ benchmark = [
     "psutil>=7.2.2",
 ]
 dev = [
+    "black>=26.10.1",
     "mypy>=1.19.1",
     "pytest>=9.0.2",
 ]
