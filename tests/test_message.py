@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from airo_ipc.errors import SchemaMismatchError
+from airo_ipc.errors import LoanReleasedError, ReadOnlyMessageError, SchemaMismatchError
 from airo_ipc.message import (
     HEADER_SIZE,
     Array,
@@ -53,11 +53,12 @@ class Template(Message):
 # -- layout -------------------------------------------------------------------------------------
 
 
-def test_header_is_first_24_bytes() -> None:
-    assert HEADER_SIZE == 24
+def test_header_is_first_32_bytes() -> None:
+    assert HEADER_SIZE == 32
     assert Point._airo_schema.offset == 0  # type: ignore[attr-defined]
     assert Point._airo_seq.offset == 8  # type: ignore[attr-defined]
     assert Point._airo_stamp_ns.offset == 16  # type: ignore[attr-defined]
+    assert Point._airo_flags.offset == 24  # type: ignore[attr-defined]
     assert Point.x.offset == HEADER_SIZE  # type: ignore[attr-defined]
 
 
@@ -68,8 +69,8 @@ def test_fields_follow_declaration_order() -> None:
 
 
 def test_size_includes_arrays_and_padding() -> None:
-    # 24 header + 8 stamp + 8 frame_id + 60 rgb + 4 padding (float32 alignment) + 80 depth
-    assert ctypes.sizeof(CameraFrame) == 24 + 8 + 8 + 60 + 4 + 80
+    # 32 header + 8 stamp + 8 frame_id + 60 rgb + 4 padding (float32 alignment) + 80 depth
+    assert ctypes.sizeof(CameraFrame) == 32 + 8 + 8 + 60 + 4 + 80
 
 
 def test_sized_aliases_map_to_ctypes() -> None:
@@ -259,7 +260,7 @@ def test_from_bytes_without_copy_shares_memory() -> None:
 
 
 def test_from_bytes_wrong_size() -> None:
-    with pytest.raises(ValueError, match="expected"):
+    with pytest.raises(SchemaMismatchError, match="expected"):
         Point.from_bytes(b"\x00" * 3)
 
 
@@ -476,3 +477,53 @@ def test_iceoryx2_accepts_message_and_rejects_other_shape() -> None:
 
     with pytest.raises(Exception, match="IncompatibleTypes"):
         node.service_builder(name).publish_subscribe(Big).open_or_create()
+
+
+# -- loan guards ------------------------------------------------------------------------------
+
+
+def test_publisher_loan_views_become_read_only() -> None:
+    f = CameraFrame(stamp=0.0, frame_id=1)
+    f._airo_begin_loan(readonly=False)
+    view = f.rgb
+    view[:] = 4
+    f.stamp = 2.0
+    assert f._airo_end_loan() is True  # `view` is still alive
+    assert not view.flags.writeable
+    with pytest.raises(ValueError):
+        view[0, 0, 0] = 1
+    with pytest.raises(LoanReleasedError):
+        _ = f.rgb
+    with pytest.raises(LoanReleasedError):
+        f.stamp = 3.0
+    with pytest.raises(LoanReleasedError):
+        f.depth = 0
+
+
+def test_readonly_loan() -> None:
+    f = CameraFrame(stamp=1.0, frame_id=1, rgb=8)
+    f._airo_begin_loan(readonly=True)
+    assert f.stamp == 1.0 and np.all(f.rgb == 8)
+    assert not f.rgb.flags.writeable
+    with pytest.raises(ReadOnlyMessageError):
+        f.stamp = 2.0
+    with pytest.raises(ReadOnlyMessageError):
+        f.rgb = 0
+    c = f.copy()  # a copy is a normal, writable message
+    c.rgb[:] = 1
+    c.stamp = 5.0
+
+
+def test_end_loan_reports_no_escape_when_views_are_gone() -> None:
+    f = CameraFrame(stamp=0.0, frame_id=1)
+    f._airo_begin_loan(readonly=True)
+    total = int(f.rgb.sum())  # temporary view, dropped right away
+    assert total == 0
+    assert f._airo_end_loan() is False
+
+
+def test_set_meta_writes_flags() -> None:
+    p = Point(x=1.0)
+    p._airo_set_meta(seq=1, stamp_ns=2, flags=1)
+    assert p._airo_flags == 1
+    assert Point.from_bytes(p.to_bytes())._airo_flags == 1

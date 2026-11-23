@@ -1,83 +1,45 @@
-"""Opinionated defaults for the AIRO lab's common IPC use cases.
+"""Sizing defaults for the iceoryx2 (``Local()``) transport.
 
-These are picked for:
-- Camera-frame streaming (one writer, many readers, want newest sample).
-- Low-rate state (pose, setpoints).
-- Control req/rep (a few callers, a few servers).
+iceoryx2 fixes the size of a topic or service when the first process creates it; later processes
+may only ask for the same size or less. Therefore every process must use the same sizing, and the
+defaults are generous. Generous sizes are cheap: iceoryx2 reserves the worst-case shared memory,
+but the operating system only backs the chunks that are written. Measured with iceoryx2 0.10.1 for
+a 4.6 MB message (1280x720 RGB-D) and 8 subscribers: 235 MB reserved, 23 MB used after 30 sends.
 
-If your use case is different, override at the call site:
-
-    pub = create_publisher("camera/frame", FrameBuffer, max_subscribers=16)
+Change the sizing only for all processes of a system at once, with ``Context(iox2=Iox2Sizing(...))``.
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Dict
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+__all__ = ["Iox2Sizing"]
 
 
 @dataclass(frozen=True)
-class Iox2PubSubDefaults:
-    """iceoryx2 publish/subscribe service sizing.
+class Iox2Sizing:
+    """iceoryx2 sizes for topics and services.
 
-    - max_publishers=2: single-writer is the norm; 2 allows a brief handover (warm restart).
-    - max_subscribers=8: covers "one camera, many consumers" without being wasteful.
-    - history_size=1: newest-sample semantics; we want the latest frame, not a backlog.
-    - subscriber_max_buffer_size=4: same family as issue #9 fix. Small enough to surface a
-      stuck consumer; large enough to ride out a hiccup.
-    - subscriber_max_borrowed_samples=2: keeps the "currently processing" + "next" pair.
-    - enable_safe_overflow=True: drop oldest on overflow rather than block the publisher.
-      Real-time loops can't tolerate publisher backpressure.
+    Attributes:
+        max_publishers: Publishers per topic. More than one allows a warm restart.
+        max_subscribers: Subscribers per topic.
+        max_borrowed_per_subscriber: ``receive_loan()`` views that one subscriber may keep alive
+            at the same time.
+        max_clients: Clients per service.
+        max_servers: Servers per service. 1: a second server for the same service fails loudly.
+        max_active_requests_per_client: Requests that one client may have in flight.
     """
 
-    max_publishers: int = 2
-    max_subscribers: int = 8
-    history_size: int = 1
-    subscriber_max_buffer_size: int = 4
-    subscriber_max_borrowed_samples: int = 2
-    enable_safe_overflow: bool = True
-
-
-@dataclass(frozen=True)
-class Iox2ReqRepDefaults:
-    """iceoryx2 request/response service sizing.
-
-    - max_clients=4: a few callers (e.g. an MPC, a teleop, a logger).
-    - max_servers=1: the common case is one server per service. Warm-standby, hot-reload,
-      and sharded backends are the only legitimate reasons to want more — override
-      `max_servers=` at the call site for those.
-    - max_active_requests_per_client=8: covers in-flight requests for slower handlers.
-    """
-
-    max_clients: int = 4
+    max_publishers: int = 4
+    max_subscribers: int = 16
+    max_borrowed_per_subscriber: int = 4
+    max_clients: int = 16
     max_servers: int = 1
     max_active_requests_per_client: int = 8
 
-
-@dataclass(frozen=True)
-class Iox2BlackboardDefaults:
-    """iceoryx2 blackboard (state) service sizing.
-
-    - max_readers=8: like pub/sub fanout.
-    - max_nodes=8: same.
-    """
-
-    max_readers: int = 8
-    max_nodes: int = 8
-
-
-# Module-level singletons. Edit these in one place to tune lab-wide.
-PUB_SUB = Iox2PubSubDefaults()
-REQ_REP = Iox2ReqRepDefaults()
-BLACKBOARD = Iox2BlackboardDefaults()
-
-
-def merge_kwargs(defaults: Any, overrides: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge per-call overrides onto a defaults dataclass, returning the full kwarg set."""
-    base = {f.name: getattr(defaults, f.name) for f in defaults.__dataclass_fields__.values()}
-    unknown = set(overrides) - set(base)
-    if unknown:
-        raise TypeError(
-            f"Unknown override(s) for {type(defaults).__name__}: {sorted(unknown)}. "
-            f"Known fields: {sorted(base)}"
-        )
-    base.update(overrides)
-    return base
+    def __post_init__(self) -> None:
+        for name, value in vars(self).items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(
+                    f"Iox2Sizing.{name} must be a positive int, got {value!r}"
+                )

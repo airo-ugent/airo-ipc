@@ -30,8 +30,8 @@ unknown dimensions and create a concrete class with :meth:`Message.with_shapes`:
 
     Frame = CameraFrame.with_shapes(rgb=(720, 1280, 3))
 
-A message is a fixed-size :class:`ctypes.Structure`. Its memory layout is a hidden 24-byte header
-(schema fingerprint, sequence number, publish time), followed by the fields in declaration order.
+A message is a fixed-size :class:`ctypes.Structure`. Its memory layout is a hidden 32-byte header
+(schema fingerprint, sequence number, publish time, flags), followed by the fields in declaration order.
 The schema fingerprint is a hash of the class name and of every field name, type and shape. The
 transports compare it, so a sender and a receiver with different definitions fail loudly instead
 of silently reading garbage.
@@ -44,6 +44,7 @@ import hashlib
 import inspect
 import math
 import sys
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import (
@@ -59,7 +60,7 @@ from typing import (
 import numpy as np
 from numpy.typing import DTypeLike
 
-from airo_ipc.errors import SchemaMismatchError
+from airo_ipc.errors import LoanReleasedError, ReadOnlyMessageError, SchemaMismatchError
 
 if sys.byteorder != "little":  # pragma: no cover - no big-endian CI runner
     raise ImportError(
@@ -79,6 +80,7 @@ __all__ = [
     "ScalarField",
     "WIRE_FORMAT_VERSION",
     "HEADER_SIZE",
+    "FLAG_LATCHED",
     "f32",
     "f64",
     "i8",
@@ -94,13 +96,23 @@ __all__ = [
 #: Version of the message memory layout. A change here changes every schema fingerprint.
 WIRE_FORMAT_VERSION = 1
 
-_HEADER_FIELDS: list[tuple[str, type[ctypes.c_uint64]]] = [
+_HEADER_FIELDS: list[tuple[str, type[Any]]] = [
     ("_airo_schema", ctypes.c_uint64),
     ("_airo_seq", ctypes.c_uint64),
     ("_airo_stamp_ns", ctypes.c_uint64),
+    ("_airo_flags", ctypes.c_uint32),
+    ("_airo_reserved", ctypes.c_uint32),
 ]
 #: Size in bytes of the hidden header at the start of every message.
-HEADER_SIZE = 24
+HEADER_SIZE = 32
+
+#: Header flag: the message comes from a latched publisher (late joiners may receive it).
+FLAG_LATCHED = 1
+
+# Loan states, stored in the instance __dict__ under "_airo_state".
+_STATE_LOAN = "loan"  # publisher loan: writable, views are tracked
+_STATE_READONLY = "readonly"  # received loan: read-only, views are tracked
+_STATE_RELEASED = "released"  # loan ended: field access raises
 
 # Sized scalar aliases. Static type checkers see a plain int / float.
 i8 = Annotated[int, ctypes.c_int8]
@@ -302,18 +314,33 @@ def Array(shape: Sequence[int | None] | int, dtype: DTypeLike) -> Any:  # noqa: 
 class _ArrayDescriptor:
     """Exposes an array field as a numpy view into the message memory."""
 
-    __slots__ = ("field",)
+    __slots__ = ("field", "storage", "shape", "dtype")
 
     def __init__(self, field: ArrayField) -> None:
         self.field = field
+        self.storage = field.storage_name
+        # Abstract templates have unresolved dimensions, but they cannot be instantiated.
+        self.shape: tuple[int, ...] = tuple(
+            d if d is not None else 0 for d in field.shape
+        )
+        self.dtype = field.dtype
 
     def __get__(self, obj: Message | None, objtype: type | None = None) -> Any:
         if obj is None:
             return self
         f = self.field
-        return np.frombuffer(getattr(obj, f.storage_name), dtype=f.dtype).reshape(
-            f.shape
+        view = np.frombuffer(getattr(obj, self.storage), dtype=self.dtype).reshape(
+            self.shape
         )
+        state = obj.__dict__.get("_airo_state")
+        if state is None:
+            return view
+        if state == _STATE_RELEASED:
+            raise LoanReleasedError(_released_message(obj, f.name))
+        if state == _STATE_READONLY:
+            view.flags.writeable = False
+        obj.__dict__["_airo_views"].append(weakref.ref(view))
+        return view
 
     def __set__(self, obj: Message, value: Any) -> None:
         """Copy ``value`` into the field.
@@ -322,7 +349,15 @@ class _ArrayDescriptor:
         ``same_kind`` rule. Python scalars and lists use normal numpy assignment rules, so
         ``msg.rgb = 0`` works for a ``uint8`` field.
         """
-        view = self.__get__(obj)
+        state = obj.__dict__.get("_airo_state")
+        if state == _STATE_READONLY:
+            raise ReadOnlyMessageError(_readonly_message(obj, self.field.name))
+        if state == _STATE_RELEASED:
+            raise LoanReleasedError(_released_message(obj, self.field.name))
+        f = self.field
+        view = np.frombuffer(getattr(obj, self.storage), dtype=self.dtype).reshape(
+            self.shape
+        )
         shape = np.shape(value)
         if shape != () and shape != view.shape:
             raise ValueError(
@@ -618,12 +653,41 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
         self._airo_schema = cls._airo_fingerprint_
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if not name.startswith("_") and name not in type(self)._airo_field_names_:
-            raise AttributeError(
-                f"{type(self).__name__} has no field '{name}'; "
-                f"fields are {list(type(self).field_names())}"
-            )
+        if not name.startswith("_"):
+            if name not in type(self)._airo_field_names_:
+                raise AttributeError(
+                    f"{type(self).__name__} has no field '{name}'; "
+                    f"fields are {list(type(self).field_names())}"
+                )
+            state = self.__dict__.get("_airo_state")
+            if state == _STATE_READONLY:
+                raise ReadOnlyMessageError(_readonly_message(self, name))
+            if state == _STATE_RELEASED:
+                raise LoanReleasedError(_released_message(self, name))
         super().__setattr__(name, value)
+
+    # -- loans (used by the transports) -----------------------------------------------------
+
+    def _airo_begin_loan(self, *, readonly: bool) -> None:
+        """Mark this message as a loan: views are tracked, and are read-only if ``readonly``."""
+        self.__dict__["_airo_state"] = _STATE_READONLY if readonly else _STATE_LOAN
+        self.__dict__["_airo_views"] = []
+
+    def _airo_end_loan(self) -> bool:
+        """End the loan. Return True if a numpy view of this message is still alive.
+
+        Live views become read-only; any later field access through this message raises
+        :class:`LoanReleasedError`.
+        """
+        escaped = False
+        for ref in self.__dict__.get("_airo_views", ()):
+            view = ref()
+            if view is not None:
+                escaped = True
+                view.flags.writeable = False
+        self.__dict__["_airo_views"] = []
+        self.__dict__["_airo_state"] = _STATE_RELEASED
+        return escaped
 
     # -- schema ---------------------------------------------------------------------------
 
@@ -750,11 +814,13 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
         """The sequence number and publish time written by the transport."""
         return MessageMeta(seq=int(self._airo_seq), stamp_ns=int(self._airo_stamp_ns))
 
-    def _airo_set_meta(self, seq: int, stamp_ns: int) -> None:
+    def _airo_set_meta(self, seq: int, stamp_ns: int, flags: int = 0) -> None:
         """Write the header. Called by the transports right before sending."""
         self._airo_schema = type(self)._airo_fingerprint_
         self._airo_seq = seq
         self._airo_stamp_ns = stamp_ns
+        self._airo_flags = flags
+        self._airo_reserved = 0
 
     def check_schema(self) -> None:
         """Raise :class:`SchemaMismatchError` if the header does not match this class."""
@@ -781,14 +847,14 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
                 (for example a ``bytearray``).
 
         Raises:
-            ValueError: ``data`` has the wrong size.
-            SchemaMismatchError: the sender used a different message definition.
+            SchemaMismatchError: ``data`` has the wrong size, or the sender used a different
+                message definition.
         """
         cls._require_concrete()
         view = memoryview(data).cast("B")
         size = ctypes.sizeof(cls)
         if view.nbytes != size:
-            raise ValueError(
+            raise SchemaMismatchError(
                 f"{cls.__name__}: expected {size} bytes, got {view.nbytes}. The sender probably "
                 f"uses a different message definition."
             )
@@ -825,6 +891,20 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
             else:
                 parts.append(f"{f.name}={getattr(self, f.name)!r}")
         return f"{type(self).__name__}({', '.join(parts)})"
+
+
+def _released_message(obj: Message, field: str) -> str:
+    return (
+        f"{type(obj).__name__}.{field}: the loan has ended (the `with` block exited). Copy the data "
+        f"inside the block, or use receive() to get a message that you own."
+    )
+
+
+def _readonly_message(obj: Message, field: str) -> str:
+    return (
+        f"{type(obj).__name__}.{field}: a received loan is read-only. Use msg.copy() to get a "
+        f"writable copy."
+    )
 
 
 def _mismatch_message(cls: type[Message], received: int) -> str:

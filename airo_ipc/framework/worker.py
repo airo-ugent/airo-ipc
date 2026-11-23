@@ -1,146 +1,215 @@
-"""Worker: a long-running process that ticks at a fixed rate and exchanges typed messages.
+"""Worker: a process that runs a fixed-rate loop and exchanges messages.
 
-A Worker bundles three responsibilities deliberately:
+A Worker bundles three things on purpose:
 
-1. Process lifecycle. It's a SpawnProcess subclass; the OS-level child is the Worker.
-2. A fixed-rate step loop. _setup() runs once, then _step() repeatedly at the configured frequency.
-3. IPC endpoints. Publishers and subscribers live in the child process and are torn down with it.
+1. Process lifecycle. It is a ``multiprocessing`` spawn process; the child process is the Worker.
+2. A fixed-rate loop. ``_setup()`` runs once, then ``_step()`` repeatedly, then ``_teardown()``.
+3. IPC endpoints. They are created in the child process (iceoryx2 nodes and Zenoh sessions do not
+   survive ``fork``) and closed with it.
 
-These three are bundled because iceoryx2 Nodes and Zenoh Sessions must be created in the
-process that uses them — they don't survive fork() cleanly and hold process-scoped OS resources.
+Subscriber callbacks and service handlers run on the loop thread, before each ``_step()``, so a
+Worker needs no locks.
+
+Any ``multiprocessing`` object that you share with a Worker (``Event``, ``Queue``, ...) must come
+from the spawn context: ``multiprocessing.get_context("spawn").Event()``.
 """
 
+from __future__ import annotations
+
+import logging
 import multiprocessing
 import time
-from abc import abstractmethod, ABC
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from multiprocessing.context import SpawnProcess
-from typing import Any, Callable, Dict
+from typing import Any, TypeVar
 
-from loguru import logger
-
-from airo_ipc.api import create_publisher, create_subscriber
-from airo_ipc.buffer import Buffer
+from airo_ipc.context import Context
+from airo_ipc.endpoints import Client, Publisher, Server, Subscriber
+from airo_ipc.message import Message
+from airo_ipc.qos import Latest, QoS
 from airo_ipc.transport import Transport
+
+__all__ = ["Worker"]
+
+logger = logging.getLogger("airo_ipc")
+
+M = TypeVar("M", bound=Message)
+Req = TypeVar("Req", bound=Message)
+Rep = TypeVar("Rep", bound=Message)
 
 
 class Worker(SpawnProcess, ABC):
-    """A long-running process that ticks at a fixed rate and exchanges typed messages with other Workers.
+    """A process that runs ``_step()`` at a fixed rate and exchanges messages.
 
-    Subclass and implement `_setup`, `_step`, and `_teardown`. Use `_register_publisher` and
-    `_subscribe` from inside `_setup` to wire up IPC.
+    Subclass it, implement ``_setup``, ``_step`` and ``_teardown``, and create endpoints in
+    ``_setup`` with ``_register_publisher``, ``_subscribe``, ``_serve`` and ``_client``::
 
-    This is a convenience class; it is not required to use airo-ipc, but it standardizes the
-    "long-running process + IPC" pattern used across the AIRO lab.
+        class Doubler(Worker):
+            def _setup(self) -> None:
+                self._register_publisher("out", Value, ipc.Local())
+                self._subscribe("in", Value, ipc.Local(), callback=self._on_value)
+
+            def _on_value(self, msg: Value) -> None:
+                self._publish("out", Value(x=2 * msg.x))
+
+            def _step(self) -> None:
+                pass
+
+            def _teardown(self) -> None:
+                pass
+
+        worker = Doubler(update_frequency=100.0)
+        worker.start()
+        ...
+        worker.stop()
+        worker.join()
+
+    Args:
+        update_frequency: ``_step()`` calls per second.
+        verbose: Log a warning when a loop iteration overruns its period.
     """
 
-    def __init__(self, update_frequency: float, verbose: bool = False):
+    def __init__(self, update_frequency: float, verbose: bool = False) -> None:
         super().__init__()
-
+        if update_frequency <= 0:
+            raise ValueError(f"update_frequency must be > 0, got {update_frequency}")
         self._update_frequency = update_frequency
-        self._stop_event = multiprocessing.get_context("spawn").Event()
         self._verbose = verbose
+        self._stop_event = multiprocessing.get_context("spawn").Event()
+
+    # -- process --------------------------------------------------------------------------
 
     def run(self) -> None:
-        self._worker_setup()
+        self._context = Context()
+        self._publishers: dict[str, Publisher[Any]] = {}
+        self._subscribers: dict[str, tuple[Subscriber[Any], Callable[[Any], None]]] = {}
+        self._servers: list[Server[Any, Any]] = []
+        try:
+            self._setup()
+            period = 1.0 / self._update_frequency
+            next_tick = time.monotonic()
+            while not self._stop_event.is_set():
+                self._update_subscriptions()
+                for server in list(self._servers):
+                    while server.spin_once(0.0):
+                        pass
+                self._step()
+                next_tick += period
+                delay = next_tick - time.monotonic()
+                if delay < 0:
+                    if self._verbose:
+                        logger.warning(
+                            "%s overran its period of %.1f ms by %.1f ms",
+                            type(self).__name__,
+                            period * 1e3,
+                            -delay * 1e3,
+                        )
+                    next_tick = time.monotonic()  # do not try to catch up
+                else:
+                    self._stop_event.wait(delay)
+        finally:
+            try:
+                self._teardown()
+            finally:
+                self._context.close()
 
-        while not self._stop_event.is_set():
-            start_time = time.time()
+    def stop(self) -> None:
+        """Ask the worker to finish its current iteration, run ``_teardown()`` and exit."""
+        self._stop_event.set()
 
-            self._update_subscriptions()
-
-            self._step()
-
-            elapsed_time = time.time() - start_time
-            desired_sleep_time = (1.0 / self._update_frequency) - elapsed_time
-            sleep_time = max(0.0, desired_sleep_time)
-
-            if self._verbose and desired_sleep_time < 0.0:
-                logger.warning(
-                    f"Worker {self.__class__.__name__} cannot keep up with desired update frequency {self._update_frequency}Hz!"
-                )
-
-            time.sleep(sleep_time)
-
-        self._teardown()
-
-    def _worker_setup(self) -> None:
-        """Handles setup that must be done inside the child process."""
-        self._subscribers: Dict[str, Any] = dict()
-        self._callbacks: Dict[str, Callable] = dict()
-        self._publishers: Dict[str, Any] = dict()
-
-        self._setup()
-
-    def _subscribe(
-        self,
-        topic_name: str,
-        buffer_type: type[Buffer],
-        transport: Transport = Transport.LOCAL,
-        *,
-        callback: Callable,
-        **kwargs: Any,
-    ) -> None:
-        if topic_name in self._subscribers:
-            if self._verbose:
-                logger.warning(
-                    f"Worker {self.__class__.__name__} is already subscribed to topic {topic_name}. Ignoring."
-                )
-            return
-
-        self._subscribers[topic_name] = create_subscriber(
-            topic_name, buffer_type, transport, **kwargs
-        )
-        self._callbacks[topic_name] = callback
-
-    def _update_subscriptions(self) -> None:
-        # When a subscription is made in a subscription callback, we should not update it in the same iteration.
-        # So we take a snapshot of the items and iterate over that.
-        items = list(self._subscribers.items())
-        for topic_name, subscriber in items:
-            value = subscriber.receive()
-            if value is not None:
-                self._callbacks[topic_name](value)
+    # -- endpoints (call from _setup) -----------------------------------------------------
 
     def _register_publisher(
         self,
-        topic_name: str,
-        buffer_type: type[Buffer],
-        transport: Transport = Transport.LOCAL,
-        **kwargs: Any,
-    ) -> None:
-        if topic_name in self._publishers:
-            if self._verbose:
-                logger.warning(
-                    f"Worker {self.__class__.__name__} is already registered as a publisher for topic {topic_name}. Ignoring."
-                )
-            return
-
-        self._publishers[topic_name] = create_publisher(
-            topic_name, buffer_type, transport, **kwargs
-        )
-
-    def _publish(self, topic_name: str, value: Buffer) -> None:
-        if topic_name not in self._publishers:
-            logger.error(
-                f"Worker {self.__class__.__name__} does not have a publisher for topic {topic_name}."
+        topic: str,
+        msg_type: type[M],
+        transport: Transport,
+        *,
+        latched: bool = False,
+    ) -> Publisher[M]:
+        if topic in self._publishers:
+            raise ValueError(
+                f"{type(self).__name__} already has a publisher for '{topic}'"
             )
+        publisher = self._context.publisher(topic, msg_type, transport, latched=latched)
+        self._publishers[topic] = publisher
+        return publisher
+
+    def _publish(self, topic: str, msg: Message) -> None:
+        publisher = self._publishers.get(topic)
+        if publisher is None:
             raise RuntimeError(
-                f"Cannot publish topics that were not registered. Violating topic: {topic_name}."
+                f"{type(self).__name__} has no publisher for '{topic}'; call "
+                f"_register_publisher() in _setup()"
             )
+        publisher.publish(msg)
 
-        self._publishers[topic_name].publish(value)
+    def _publisher(self, topic: str) -> Publisher[Any]:
+        """The publisher for ``topic``, for example to use ``loan()``."""
+        return self._publishers[topic]
+
+    def _subscribe(
+        self,
+        topic: str,
+        msg_type: type[M],
+        transport: Transport,
+        *,
+        callback: Callable[[M], None],
+        qos: QoS = Latest(),
+    ) -> Subscriber[M]:
+        """Call ``callback(msg)`` on the loop thread for each message, before ``_step()``."""
+        if topic in self._subscribers:
+            raise ValueError(
+                f"{type(self).__name__} is already subscribed to '{topic}'"
+            )
+        subscriber = self._context.subscriber(topic, msg_type, transport, qos=qos)
+        self._subscribers[topic] = (subscriber, callback)
+        return subscriber
+
+    def _serve(
+        self,
+        topic: str,
+        request_type: type[Req],
+        response_type: type[Rep],
+        transport: Transport,
+        handler: Callable[[Req], Rep],
+    ) -> Server[Req, Rep]:
+        """Serve a service; ``handler`` runs on the loop thread, before ``_step()``."""
+        server = self._context.server(
+            topic, request_type, response_type, transport, handler, spin=False
+        )
+        self._servers.append(server)
+        return server
+
+    def _client(
+        self,
+        topic: str,
+        request_type: type[Req],
+        response_type: type[Rep],
+        transport: Transport,
+    ) -> Client[Req, Rep]:
+        return self._context.client(topic, request_type, response_type, transport)
+
+    def _update_subscriptions(self) -> None:
+        # A callback may subscribe to a new topic; iterate over a snapshot.
+        for subscriber, callback in list(self._subscribers.values()):
+            while True:
+                msg = subscriber.receive()
+                if msg is None:
+                    break
+                callback(msg)
+
+    # -- to implement ---------------------------------------------------------------------
 
     @abstractmethod
     def _setup(self) -> None:
-        pass
+        """Runs once in the child process. Create endpoints here."""
 
     @abstractmethod
     def _step(self) -> None:
-        pass
+        """Runs at ``update_frequency`` Hz."""
 
     @abstractmethod
     def _teardown(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        self._stop_event.set()
+        """Runs once when the worker stops, also after an exception."""

@@ -1,136 +1,60 @@
-"""Unified factory API for creating IPC publishers, subscribers, and other patterns.
+"""Module-level factories that use the default :class:`~airo_ipc.context.Context` of the process.
 
-All factories accept the same `(topic, buffer_type, transport)` shape. Any extra **kwargs are
-forwarded to the backend (e.g. iceoryx2 service-sizing overrides). See `airo_ipc.defaults` for
-the AIRO-lab defaults and the names of the available overrides.
+import airo_ipc as ipc
 
-Topic prefixes `local://` and `net://` are accepted as a shorthand for picking the transport
-when one isn't passed explicitly.
+pub = ipc.publisher("camera/front", CameraFrame, ipc.Local())
+sub = ipc.subscriber("camera/front", CameraFrame, ipc.Network(connect="10.0.0.2"))
 """
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TypeVar
 
-from airo_ipc.buffer import Buffer
+from airo_ipc.context import default_context
+from airo_ipc.endpoints import Client, Publisher, Server, Subscriber
+from airo_ipc.message import Message
+from airo_ipc.qos import Latest, QoS
 from airo_ipc.transport import Transport
 
+__all__ = ["publisher", "subscriber", "client", "server"]
 
-def _parse_topic(topic: str, transport: Transport | None) -> tuple[str, Transport]:
-    """Extract transport from topic prefix or use explicit/default transport."""
-    if transport is not None:
-        for prefix in ("local://", "net://"):
-            if topic.startswith(prefix):
-                topic = topic[len(prefix):]
-        return topic, transport
-
-    if topic.startswith("local://"):
-        return topic[len("local://"):], Transport.LOCAL
-    if topic.startswith("net://"):
-        return topic[len("net://"):], Transport.NETWORK
-
-    return topic, Transport.LOCAL
+M = TypeVar("M", bound=Message)
+Req = TypeVar("Req", bound=Message)
+Rep = TypeVar("Rep", bound=Message)
 
 
-def create_publisher(
+def publisher(
+    topic: str, msg_type: type[M], transport: Transport, *, latched: bool = False
+) -> Publisher[M]:
+    """Create a publisher. See :meth:`Context.publisher <airo_ipc.context.Context.publisher>`."""
+    return default_context().publisher(topic, msg_type, transport, latched=latched)
+
+
+def subscriber(
+    topic: str, msg_type: type[M], transport: Transport, *, qos: QoS = Latest()
+) -> Subscriber[M]:
+    """Create a subscriber. See :meth:`Context.subscriber <airo_ipc.context.Context.subscriber>`."""
+    return default_context().subscriber(topic, msg_type, transport, qos=qos)
+
+
+def client(
+    topic: str, request_type: type[Req], response_type: type[Rep], transport: Transport
+) -> Client[Req, Rep]:
+    """Create a service client. See :meth:`Context.client <airo_ipc.context.Context.client>`."""
+    return default_context().client(topic, request_type, response_type, transport)
+
+
+def server(
     topic: str,
-    buffer_type: type[Buffer],
-    transport: Transport | None = None,
+    request_type: type[Req],
+    response_type: type[Rep],
+    transport: Transport,
+    handler: Callable[[Req], Rep],
     *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2Publisher
-        return Iox2Publisher(topic, buffer_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohPublisher
-        return ZenohPublisher(topic, buffer_type, session=session, **kwargs)
-
-
-def create_subscriber(
-    topic: str,
-    buffer_type: type[Buffer],
-    transport: Transport | None = None,
-    *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2Subscriber
-        return Iox2Subscriber(topic, buffer_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohSubscriber
-        return ZenohSubscriber(topic, buffer_type, session=session, **kwargs)
-
-
-def create_requester(
-    topic: str,
-    request_type: type[Buffer],
-    reply_type: type[Buffer],
-    transport: Transport | None = None,
-    *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2Requester
-        return Iox2Requester(topic, request_type, reply_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohRequester
-        return ZenohRequester(topic, request_type, reply_type, session=session, **kwargs)
-
-
-def create_responder(
-    topic: str,
-    request_type: type[Buffer],
-    reply_type: type[Buffer],
-    transport: Transport | None = None,
-    *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2Responder
-        return Iox2Responder(topic, request_type, reply_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohResponder
-        return ZenohResponder(topic, request_type, reply_type, session=session, **kwargs)
-
-
-def create_state_writer(
-    topic: str,
-    buffer_type: type[Buffer],
-    transport: Transport | None = None,
-    *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2StateWriter
-        return Iox2StateWriter(topic, buffer_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohStateWriter
-        return ZenohStateWriter(topic, buffer_type, session=session, **kwargs)
-
-
-def create_state_reader(
-    topic: str,
-    buffer_type: type[Buffer],
-    transport: Transport | None = None,
-    *,
-    session=None,
-    **kwargs: Any,
-):
-    topic, t = _parse_topic(topic, transport)
-    if t == Transport.LOCAL:
-        from airo_ipc.backends.iox2 import Iox2StateReader
-        return Iox2StateReader(topic, buffer_type, node=session, **kwargs)
-    else:
-        from airo_ipc.backends.net import ZenohStateReader
-        return ZenohStateReader(topic, buffer_type, session=session, **kwargs)
+    spin: bool = True,
+) -> Server[Req, Rep]:
+    """Create a service server. See :meth:`Context.server <airo_ipc.context.Context.server>`."""
+    return default_context().server(
+        topic, request_type, response_type, transport, handler, spin=spin
+    )
