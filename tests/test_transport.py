@@ -2,22 +2,31 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import airo_ipc as ipc
-from airo_ipc.transport import ENV_CONNECT, ENV_LISTEN, ENV_NAMESPACE, validate_topic
+from airo_ipc.transport import (
+    DEFAULT_NAMESPACE,
+    DEFAULT_PORT,
+    ENV_CONNECT,
+    ENV_LISTEN,
+    ENV_NAMESPACE,
+    validate_topic,
+)
 
 
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
-        ("192.168.1.20", "tcp/192.168.1.20:7447"),
+        ("192.168.1.20", f"tcp/192.168.1.20:{DEFAULT_PORT}"),
         ("192.168.1.20:8000", "tcp/192.168.1.20:8000"),
-        ("robot.local", "tcp/robot.local:7447"),
-        ("[::1]", "tcp/[::1]:7447"),
+        ("robot.local", f"tcp/robot.local:{DEFAULT_PORT}"),
+        ("[::1]", f"tcp/[::1]:{DEFAULT_PORT}"),
         ("[::1]:9000", "tcp/[::1]:9000"),
-        ("udp/10.0.0.2:7447", "udp/10.0.0.2:7447"),
-        ("tcp/10.0.0.2:7447", "tcp/10.0.0.2:7447"),
+        ("udp/10.0.0.2:8000", "udp/10.0.0.2:8000"),
+        ("tcp/10.0.0.2:8000", "tcp/10.0.0.2:8000"),
     ],
 )
 def test_endpoint_normalization(given: str, expected: str) -> None:
@@ -35,21 +44,34 @@ def test_environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ENV_LISTEN, "0.0.0.0")
     monkeypatch.setenv(ENV_NAMESPACE, "cell_2")
     resolved = ipc.Network().resolve()
-    assert resolved.connect == ("tcp/10.0.0.2:7447", "tcp/10.0.0.3:8000")
-    assert resolved.listen == ("tcp/0.0.0.0:7447",)
+    assert resolved.connect == (f"tcp/10.0.0.2:{DEFAULT_PORT}", "tcp/10.0.0.3:8000")
+    assert resolved.listen == (f"tcp/0.0.0.0:{DEFAULT_PORT}",)
     assert resolved.namespace == "cell_2"
     explicit = ipc.Network(connect="10.9.9.9", namespace="lab").resolve()
-    assert explicit.connect == ("tcp/10.9.9.9:7447",) and explicit.namespace == "lab"
+    assert (
+        explicit.connect == (f"tcp/10.9.9.9:{DEFAULT_PORT}",)
+        and explicit.namespace == "lab"
+    )
 
 
 def test_default_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ENV_NAMESPACE, raising=False)
-    assert ipc.Network().resolve().namespace == "default"
-    assert ipc.Network().resolve().key_prefix() == "airo_ipc/default"
+    assert ipc.Network().resolve().namespace == DEFAULT_NAMESPACE
+    assert ipc.Network().resolve().key_prefix() == f"airo_ipc/{DEFAULT_NAMESPACE}"
+
+
+def test_docs_name_the_current_environment_variables() -> None:
+    """The docs repeat these names for readers; fail if a constant changes without them."""
+    readme = (Path(__file__).parents[1] / "README.md").read_text()
+    for value in (ENV_CONNECT, ENV_LISTEN, ENV_NAMESPACE, str(DEFAULT_PORT)):
+        assert value in readme, f"README.md does not mention {value}"
+        assert value in (ipc.Network.__doc__ or ""), f"Network docstring lacks {value}"
 
 
 def test_network_is_hashable_and_comparable() -> None:
-    assert ipc.Network(connect="10.0.0.2") == ipc.Network(connect=["tcp/10.0.0.2:7447"])
+    assert ipc.Network(connect="10.0.0.2") == ipc.Network(
+        connect=[f"tcp/10.0.0.2:{DEFAULT_PORT}"]
+    )
     assert len({ipc.Network(), ipc.Network(), ipc.Local(), ipc.Local()}) == 2
 
 
@@ -100,10 +122,11 @@ def test_context_argument_checks() -> None:
             ctx.publisher("t", int, ipc.Local())  # type: ignore[type-var]
         with pytest.raises(ValueError, match="invalid topic"):
             ctx.publisher("/t", Point, ipc.Local())
-        with pytest.raises(TypeError, match="qos"):
-            ctx.subscriber("t", Point, ipc.Local(), qos=3)  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="between 1 and"):
-            ipc.Queue(0)
+        with pytest.raises(TypeError, match="depth"):
+            ctx.subscriber("t", Point, ipc.Local(), depth=1.0)  # type: ignore[arg-type]
+        for depth in (0, ipc.MAX_QUEUE_DEPTH + 1):
+            with pytest.raises(ValueError, match="between 1 and"):
+                ctx.subscriber("t", Point, ipc.Local(), depth=depth)
 
 
 def test_abstract_message_rejected() -> None:
@@ -129,8 +152,3 @@ def test_default_context_is_reused_and_recreated() -> None:
     assert ipc.default_context() is first
     first.close()
     assert ipc.default_context() is not first
-
-
-def test_iox2_sizing_validation() -> None:
-    with pytest.raises(ValueError, match="positive int"):
-        ipc.Iox2Sizing(max_subscribers=0)

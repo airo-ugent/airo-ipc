@@ -24,12 +24,12 @@ four by design.
 | `writer(msg)` | `pub.publish(msg)`, or `with pub.loan() as msg: ...` (zero-copy) |
 | `reader()` (returns a view that can change under you) | `sub.receive()` (an owned copy) or `with sub.receive_loan() as msg:` (a stable view) |
 | `reader.read_into(msg)` | `with sub.receive_loan() as view: np.copyto(dst, view.field)` |
-| `DDSReader.take()` | `sub.receive()` with `qos=ipc.Queue(n)` |
-| `DDSReader.__call__()` (latest without consuming) | `sub.receive()` with `qos=ipc.Latest()` |
+| `DDSReader.take()` | `sub.receive()` with `ipc.subscriber(..., depth=n)` |
+| `DDSReader.__call__()` (latest without consuming) | `sub.receive()` with the default `depth=1` |
 | `WaitingForFirstMessageException` | `receive()` returns `None` |
 | `nr_of_buffers` | gone: iceoryx2 tracks who holds which buffer |
 | (none) | services: `ipc.server(...)` / `ipc.client(...).call(...)` |
-| `airo_ipc.framework.Node` | `airo_ipc.framework.Worker` |
+| `airo_ipc.framework.Node` | removed: write the loop yourself, see [Node](#node) |
 | `IpcKind.SHARED_MEMORY` / `IpcKind.DDS` | `ipc.Local()` / `ipc.Network(...)` |
 
 ## Message definitions
@@ -131,39 +131,72 @@ resolution = reader()
 **1.0**
 
 ```python
-pub = ipc.publisher("resolution", Resolution, ipc.Network(), latched=True)
-pub.publish(Resolution(width=640, height=480))
-sub = ipc.subscriber("resolution", Resolution, ipc.Network())
-resolution = sub.receive(timeout=5.0)   # latched: also arrives if the subscriber starts later
+class GetResolution(ipc.Message):     # an empty request
+    pass
+
+# The camera process serves its resolution, in its own loop.
+server = ipc.server("resolution", GetResolution, Resolution, ipc.Network(),
+                    lambda _: Resolution(width=640, height=480))
+while running:
+    server.spin_once(timeout=0.1)
+
+# Another process asks for it, also if it starts later than the camera process.
+client = ipc.client("resolution", GetResolution, Resolution, ipc.Network())
+client.wait_for_server(timeout=5.0)
+resolution = client.call(GetResolution())
 ```
 
-On one host you can use `ipc.Local()` for small messages too; it is faster than `Network()`.
+A subscriber receives only messages published after it connected, so use a service (not a topic)
+for state that a process needs when it starts.
 
-## Node → Worker
+## Node
 
-| 0.3 `Node` | 1.0 `Worker` |
-|---|---|
-| `Node(update_frequency, verbose)` | `Worker(update_frequency, verbose)` |
-| `_register_publisher(topic, idl, IpcKind.X)` | `_register_publisher(topic, MsgType, transport, latched=False)` (returns the publisher) |
-| `_publish(topic, value)` | `_publish(topic, msg)`, or `self._publisher(topic).loan()` |
-| `_subscribe(topic, idl, IpcKind.X, callback)` | `_subscribe(topic, MsgType, transport, callback=..., qos=...)` |
-| (none) | `_serve(topic, Req, Rep, transport, handler)`, `_client(topic, Req, Rep, transport)` |
-| `_setup` / `_step` / `_teardown` / `stop()` | unchanged |
+1.0 has no `Node` class. Use a `multiprocessing` process with a loop; `_setup`, `_step` and
+`_teardown` become plain code before, in and after the loop:
 
-Differences:
+```python
+import multiprocessing
+import time
 
-- The transport is a required argument; there is no default.
-- Registering the same topic twice raises `ValueError` (0.3 logged a warning and ignored it).
-- The callback receives an owned copy of each message; several messages per loop iteration are
-  delivered when a `Queue` QoS is used.
-- `_teardown()` also runs when `_setup()` or `_step()` raises.
+import airo_ipc as ipc
 
-The spawn rule is unchanged: create every `multiprocessing` object that you share with a Worker
-from `multiprocessing.get_context("spawn")`.
+
+def camera_process(stop) -> None:
+    camera = open_camera()                                                   # _setup
+    frames = ipc.publisher("camera/front", CameraFrame, ipc.Local())
+    commands = ipc.subscriber("camera/commands", Command, ipc.Local(), depth=8)
+    period = 1 / 30
+    try:
+        while not stop.is_set():
+            start = time.monotonic()
+            while (command := commands.receive()) is not None:              # _subscribe callback
+                handle(command)
+            with frames.loan() as frame:                                     # _step
+                camera.read_into(frame.rgb)
+            time.sleep(max(0.0, period - (time.monotonic() - start)))
+    finally:
+        camera.close()                                                       # _teardown
+
+
+if __name__ == "__main__":
+    spawn = multiprocessing.get_context("spawn")
+    stop = spawn.Event()
+    process = spawn.Process(target=camera_process, args=(stop,))
+    process.start()
+    ...
+    stop.set()
+    process.join()
+```
+
+Create endpoints in the child process (iceoryx2 and Zenoh resources do not survive `fork`), and
+create every `multiprocessing` object that you share with it from
+`multiprocessing.get_context("spawn")`.
 
 ## Behaviour changes to check
 
 - **Python 3.11+** (0.3: 3.9+).
+- **Threads.** airo-ipc starts no threads: call `receive()` and `server.spin_once()` in your own
+  loop, and use each endpoint from one thread.
 - **Copies.** `receive()` returns a copy. Use `receive_loan()` where the copy matters.
 - **Schema.** Changing a message class (field, type, shape, order or class name) makes old and
   new processes incompatible; they raise `SchemaMismatchError` instead of exchanging garbage.

@@ -1,18 +1,67 @@
 """The small interface that every transport backend implements.
 
 The public endpoint classes in :mod:`airo_ipc.endpoints` hold all shared logic (sequence numbers,
-loans, timeouts, type checks, threads). A backend only moves bytes. Backends are not thread-safe;
-the endpoints serialize calls with a lock.
+loans, timeouts, type checks). A backend only moves bytes. Backends are not thread-safe; an
+endpoint holds its lock for every port call, so that ``close()`` from another thread is safe.
+Client and server ports are Zenoh ports, which are thread-safe, so their endpoints do not lock.
 """
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
 from airo_ipc.message import Message
 
-__all__ = ["PublisherPort", "SubscriberPort", "ClientPort", "ServerPort"]
+__all__ = [
+    "PublisherPort",
+    "SubscriberPort",
+    "ClientPort",
+    "ServerPort",
+    "MAX_QUEUE_DEPTH",
+    "check_timeout",
+    "wait_slices",
+]
+
+#: Largest subscriber ``depth``. iceoryx2 fixes the buffer size when the first process creates a
+#: topic, so every process uses this maximum and each subscriber picks its own depth below it.
+MAX_QUEUE_DEPTH = 16
+
+#: Longest single blocking wait, so that Ctrl-C (KeyboardInterrupt) and close() act quickly.
+WAIT_SLICE_SECONDS = 0.1
+
+
+def check_timeout(timeout: float | None) -> None:
+    """Raise ValueError unless ``timeout`` is None or >= 0."""
+    if timeout is not None and timeout < 0:
+        raise ValueError(f"timeout must be >= 0 or None, got {timeout}")
+
+
+def wait_slices(timeout: float | None) -> Iterator[float]:
+    """Wait times for a loop that polls, waits the yielded time, and polls again.
+
+    Yields slices of at most :data:`WAIT_SLICE_SECONDS` until ``timeout`` seconds pass (forever
+    if ``timeout`` is None), then a final ``0.0`` so that the caller polls once after the deadline.
+
+    Raises:
+        ValueError: ``timeout`` is negative.
+    """
+    check_timeout(timeout)
+    return _slices(None if timeout is None else time.monotonic() + timeout)
+
+
+def _slices(deadline: float | None) -> Iterator[float]:
+    while True:
+        if deadline is None:
+            yield WAIT_SLICE_SECONDS
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            yield 0.0
+            return
+        yield min(remaining, WAIT_SLICE_SECONDS)
 
 
 class PublisherPort(ABC):
@@ -41,12 +90,12 @@ class PublisherPort(ABC):
 
 
 class SubscriberPort(ABC):
-    #: True if `take` returns messages that the caller owns (no `release` needed).
-    owned_messages: bool = False
-
     @abstractmethod
     def take(self) -> tuple[Message, Any] | None:
-        """Return the next message (per the QoS) and a holder for `release`, or None."""
+        """Return the next message and a holder for `release`, or None.
+
+        A holder of None means that the caller owns the message (no `release` needed).
+        """
 
     @abstractmethod
     def release(self, holder: Any) -> None:
@@ -92,7 +141,8 @@ class ServerPort(ABC):
     def reply(self, token: Any, response: Message) -> None: ...
 
     @abstractmethod
-    def reply_error(self, token: Any, error: str) -> None: ...
+    def reply_error(self, token: Any, error: BaseException) -> None:
+        """Send ``error`` to the client, which raises it as ``ServiceError("<Type>: <text>")``."""
 
     @abstractmethod
     def close(self) -> None: ...

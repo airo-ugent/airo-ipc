@@ -76,7 +76,7 @@ def test_latest_keeps_only_newest(pair: Pair, topic: str) -> None:
 
 
 def test_queue_keeps_order_and_drops_oldest(pair: Pair, topic: str) -> None:
-    pub, sub = connect(pair, topic, qos=ipc.Queue(3))
+    pub, sub = connect(pair, topic, depth=3)
     for i in range(5):
         pub.publish(Small(stamp=0.0, index=i))
     time.sleep(0.3)
@@ -150,13 +150,15 @@ def test_receive_loan_view_outlives_block(pair: Pair, topic: str) -> None:
 
 
 def test_too_many_loans_local(topic: str) -> None:
-    with ipc.Context(iox2=ipc.Iox2Sizing(max_borrowed_per_subscriber=2)) as ctx:
-        sub = ctx.subscriber(topic, Small, ipc.Local(), qos=ipc.Queue(8))
+    from airo_ipc.backends.iox2_backend import MAX_LOANS_PER_SUBSCRIBER
+
+    with ipc.Context() as ctx:
+        sub = ctx.subscriber(topic, Small, ipc.Local(), depth=ipc.MAX_QUEUE_DEPTH)
         pub = ctx.publisher(topic, Small, ipc.Local())
         kept = []
-        for i in range(3):
+        for i in range(MAX_LOANS_PER_SUBSCRIBER + 1):
             pub.publish(Small(stamp=0.0, index=i))
-        for _ in range(2):
+        for _ in range(MAX_LOANS_PER_SUBSCRIBER):
             with sub.receive_loan(timeout=1) as frame:
                 assert frame is not None
                 kept.append(frame.rgb)
@@ -176,16 +178,7 @@ def test_has_publishers_and_subscribers(pair: Pair, topic: str) -> None:
     assert wait_until(lambda: not sub.has_publishers)
 
 
-def test_latched_reaches_late_subscriber(pair: Pair, topic: str) -> None:
-    pub = pair.a.publisher(topic, Small, pair.ta, latched=True)
-    pub.publish(Small(stamp=0.0, index=42))
-    time.sleep(0.1)
-    sub = pair.b.subscriber(topic, Small, pair.tb)
-    msg = sub.receive(timeout=3)
-    assert msg is not None and msg.index == 42
-
-
-def test_not_latched_skips_late_subscriber(pair: Pair, topic: str) -> None:
+def test_late_subscriber_misses_earlier_messages(pair: Pair, topic: str) -> None:
     pub = pair.a.publisher(topic, Small, pair.ta)
     pub.publish(Small(stamp=0.0, index=42))
     time.sleep(0.1)
@@ -208,25 +201,6 @@ def test_schema_mismatch(pair: Pair, topic: str) -> None:
     pub.publish(Small(stamp=0.0, index=1))
     with pytest.raises(ipc.SchemaMismatchError):
         sub.receive(timeout=3)
-
-
-def test_on_message(pair: Pair, topic: str) -> None:
-    pub, sub = connect(pair, topic, qos=ipc.Queue(16))
-    received: list[int] = []
-    done = threading.Event()
-
-    def callback(msg: ipc.Message) -> None:
-        received.append(msg.index)  # type: ignore[attr-defined]
-        if len(received) == 3:
-            done.set()
-
-    sub.on_message(callback)
-    for i in range(3):
-        pub.publish(Small(stamp=0.0, index=i))
-        time.sleep(0.01)
-    assert done.wait(5)
-    assert received == [0, 1, 2]
-    sub.close()
 
 
 def test_large_frame(pair: Pair, topic: str) -> None:

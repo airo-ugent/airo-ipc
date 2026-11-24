@@ -31,7 +31,8 @@ unknown dimensions and create a concrete class with :meth:`Message.with_shapes`:
     Frame = CameraFrame.with_shapes(rgb=(720, 1280, 3))
 
 A message is a fixed-size :class:`ctypes.Structure`. Its memory layout is a hidden 32-byte header
-(schema fingerprint, sequence number, publish time, flags), followed by the fields in declaration order.
+(schema fingerprint, sequence number, publish time, reserved), followed by the fields in declaration
+order.
 The schema fingerprint is a hash of the class name and of every field name, type and shape. The
 transports compare it, so a sender and a receiver with different definitions fail loudly instead
 of silently reading garbage.
@@ -43,6 +44,7 @@ import ctypes
 import hashlib
 import inspect
 import math
+import struct
 import sys
 import weakref
 from collections.abc import Sequence
@@ -80,7 +82,6 @@ __all__ = [
     "ScalarField",
     "WIRE_FORMAT_VERSION",
     "HEADER_SIZE",
-    "FLAG_LATCHED",
     "f32",
     "f64",
     "i8",
@@ -100,14 +101,12 @@ _HEADER_FIELDS: list[tuple[str, type[Any]]] = [
     ("_airo_schema", ctypes.c_uint64),
     ("_airo_seq", ctypes.c_uint64),
     ("_airo_stamp_ns", ctypes.c_uint64),
-    ("_airo_flags", ctypes.c_uint32),
-    ("_airo_reserved", ctypes.c_uint32),
+    # Always 0; room for later wire-format additions.
+    ("_airo_reserved", ctypes.c_uint64),
 ]
+_HEADER_STRUCT = struct.Struct("<" + "Q" * len(_HEADER_FIELDS))
 #: Size in bytes of the hidden header at the start of every message.
-HEADER_SIZE = 32
-
-#: Header flag: the message comes from a latched publisher (late joiners may receive it).
-FLAG_LATCHED = 1
+HEADER_SIZE = _HEADER_STRUCT.size
 
 # Loan states, stored in the instance __dict__ under "_airo_state".
 _STATE_LOAN = "loan"  # publisher loan: writable, views are tracked
@@ -132,24 +131,10 @@ _PLAIN_SCALARS: dict[type, type[Any]] = {
     bool: ctypes.c_bool,
 }
 
-# ctypes `_type_` code -> scalar kind ("i" signed, "u" unsigned, "f" float, "bool").
-_CTYPE_KINDS = {
-    "b": "i",
-    "h": "i",
-    "i": "i",
-    "l": "i",
-    "q": "i",
-    "B": "u",
-    "H": "u",
-    "I": "u",
-    "L": "u",
-    "Q": "u",
-    "f": "f",
-    "d": "f",
-    "?": "bool",
-}
-# Scalar kind -> Python type that a field of that kind holds.
-_KIND_PYTYPE: dict[str, type] = {"i": int, "u": int, "f": float, "bool": bool}
+# ctypes `_type_` codes of the supported scalar types (integers, float, double, bool).
+_SCALAR_TYPE_CODES = frozenset("bhilqBHILQfd?")
+# numpy dtype kind -> Python type that a field of that kind holds.
+_KIND_PYTYPE: dict[str, type] = {"i": int, "u": int, "f": float, "b": bool}
 
 # Unsigned ctypes integer used as storage element for arrays, by element alignment.
 _STORAGE_BY_ALIGNMENT: dict[int, type[Any]] = {
@@ -325,18 +310,20 @@ class _ArrayDescriptor:
         )
         self.dtype = field.dtype
 
+    def _view(self, obj: Message) -> np.ndarray[Any, Any]:
+        return np.frombuffer(getattr(obj, self.storage), dtype=self.dtype).reshape(
+            self.shape
+        )
+
     def __get__(self, obj: Message | None, objtype: type | None = None) -> Any:
         if obj is None:
             return self
-        f = self.field
-        view = np.frombuffer(getattr(obj, self.storage), dtype=self.dtype).reshape(
-            self.shape
-        )
+        view = self._view(obj)
         state = obj.__dict__.get("_airo_state")
         if state is None:
             return view
         if state == _STATE_RELEASED:
-            raise LoanReleasedError(_released_message(obj, f.name))
+            raise LoanReleasedError(_released_message(obj, self.field.name))
         if state == _STATE_READONLY:
             view.flags.writeable = False
         obj.__dict__["_airo_views"].append(weakref.ref(view))
@@ -349,15 +336,8 @@ class _ArrayDescriptor:
         ``same_kind`` rule. Python scalars and lists use normal numpy assignment rules, so
         ``msg.rgb = 0`` works for a ``uint8`` field.
         """
-        state = obj.__dict__.get("_airo_state")
-        if state == _STATE_READONLY:
-            raise ReadOnlyMessageError(_readonly_message(obj, self.field.name))
-        if state == _STATE_RELEASED:
-            raise LoanReleasedError(_released_message(obj, self.field.name))
-        f = self.field
-        view = np.frombuffer(getattr(obj, self.storage), dtype=self.dtype).reshape(
-            self.shape
-        )
+        _check_writable(obj, self.field.name)
+        view = self._view(obj)
         shape = np.shape(value)
         if shape != () and shape != view.shape:
             raise ValueError(
@@ -370,9 +350,14 @@ class _ArrayDescriptor:
             view[...] = value
 
 
+def _scalar_kind(ctype: type[Any]) -> str:
+    """The numpy dtype kind of a supported ctypes scalar: "i", "u", "f" or "b"."""
+    return np.dtype(ctype).kind
+
+
 def _scalar_code(ctype: type[Any]) -> str:
-    kind = _CTYPE_KINDS[getattr(ctype, "_type_")]
-    return "bool" if kind == "bool" else f"{kind}{8 * ctypes.sizeof(ctype)}"
+    kind = _scalar_kind(ctype)
+    return "bool" if kind == "b" else f"{kind}{8 * ctypes.sizeof(ctype)}"
 
 
 def _scalar_from_annotation(cls_name: str, name: str, annotation: Any) -> ScalarField:
@@ -388,10 +373,10 @@ def _scalar_from_annotation(cls_name: str, name: str, annotation: Any) -> Scalar
         ]
         if (
             len(ctypes_extras) == 1
-            and getattr(ctypes_extras[0], "_type_", "") in _CTYPE_KINDS
+            and getattr(ctypes_extras[0], "_type_", "") in _SCALAR_TYPE_CODES
         ):
             ctype = ctypes_extras[0]
-            kind = _CTYPE_KINDS[getattr(ctype, "_type_")]
+            kind = _scalar_kind(ctype)
             if base is not _KIND_PYTYPE[kind]:
                 raise TypeError(
                     f"{cls_name}.{name}: Annotated[{base.__name__}, {ctype.__name__}] mixes "
@@ -472,6 +457,14 @@ def _parse_fields(
     defaults: dict[str, Any] = {}
     reserved = _reserved_names()
     missing = object()
+    for key, value in namespace.items():
+        if isinstance(value, _ArraySpec) and not _is_ndarray_annotation(
+            annotations.get(key)
+        ):
+            raise TypeError(
+                f"{cls_name}.{key}: Array(...) needs an NDArray annotation, for example "
+                f"`{key}: NDArray[np.uint8] = Array(...)`"
+            )
     for name, annotation in annotations.items():
         if annotation is ClassVar or get_origin(annotation) is ClassVar:
             continue
@@ -492,34 +485,19 @@ def _parse_fields(
             _check_annotation_dtype(cls_name, name, annotation, default)
             fields.append(ArrayField(name, default.shape, default.dtype))
             continue
-        if isinstance(default, _ArraySpec):
-            raise TypeError(
-                f"{cls_name}.{name}: Array(...) needs an NDArray annotation, for example "
-                f"`{name}: NDArray[np.uint8] = Array(...)`"
-            )
         field = _scalar_from_annotation(cls_name, name, annotation)
         fields.append(field)
         if default is not missing:
-            pytype = _KIND_PYTYPE[_CTYPE_KINDS[getattr(field.ctype, "_type_")]]
-            if pytype is float:
-                ok = isinstance(default, (int, float)) and not isinstance(default, bool)
-            elif pytype is int:
-                ok = isinstance(default, int) and not isinstance(default, bool)
-            else:
-                ok = isinstance(default, bool)
-            if not ok:
+            pytype = _KIND_PYTYPE[_scalar_kind(field.ctype)]
+            # An int is a valid float. bool is a subclass of int, so check it separately.
+            accepted = (int, float) if pytype is float else pytype
+            if isinstance(default, bool) != (pytype is bool) or not isinstance(
+                default, accepted
+            ):
                 raise TypeError(
                     f"{cls_name}.{name}: default {default!r} is not a {pytype.__name__}"
                 )
             defaults[name] = default
-
-    field_names = {f.name for f in fields}
-    for key, value in namespace.items():
-        if isinstance(value, _ArraySpec) and key not in field_names:
-            raise TypeError(
-                f"{cls_name}.{key}: Array(...) needs an NDArray annotation, for example "
-                f"`{key}: NDArray[np.uint8] = Array(...)`"
-            )
     return tuple(fields), defaults
 
 
@@ -639,8 +617,7 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
 
     def __init__(self, **fields: Any) -> None:
         cls = type(self)
-        if cls._airo_abstract_:
-            raise TypeError(cls._abstract_error())
+        cls._require_concrete()
         super().__init__()
         unknown = set(fields) - cls._airo_field_names_
         if unknown:
@@ -659,11 +636,7 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
                     f"{type(self).__name__} has no field '{name}'; "
                     f"fields are {list(type(self).field_names())}"
                 )
-            state = self.__dict__.get("_airo_state")
-            if state == _STATE_READONLY:
-                raise ReadOnlyMessageError(_readonly_message(self, name))
-            if state == _STATE_RELEASED:
-                raise LoanReleasedError(_released_message(self, name))
+            _check_writable(self, name)
         super().__setattr__(name, value)
 
     # -- loans (used by the transports) -----------------------------------------------------
@@ -789,23 +762,22 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
         return new_cls  # type: ignore[return-value]
 
     @classmethod
-    def _abstract_error(cls) -> str:
+    def _require_concrete(cls) -> None:
+        if not cls._airo_abstract_:
+            return
         unresolved = [
             f"{f.name}={f.shape}"
             for f in cls._airo_fields_
             if isinstance(f, ArrayField) and not f.resolved
         ]
         if not unresolved:
-            return "Message is an abstract base class; subclass it to define a message"
-        return (
+            raise TypeError(
+                "Message is an abstract base class; subclass it to define a message"
+            )
+        raise TypeError(
             f"{cls.__name__} has array fields with unknown dimensions ({', '.join(unresolved)}); "
             f"create a concrete class with {cls.__name__}.with_shapes(...)"
         )
-
-    @classmethod
-    def _require_concrete(cls) -> None:
-        if cls._airo_abstract_:
-            raise TypeError(cls._abstract_error())
 
     # -- header ---------------------------------------------------------------------------
 
@@ -814,13 +786,11 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
         """The sequence number and publish time written by the transport."""
         return MessageMeta(seq=int(self._airo_seq), stamp_ns=int(self._airo_stamp_ns))
 
-    def _airo_set_meta(self, seq: int, stamp_ns: int, flags: int = 0) -> None:
+    def _airo_set_meta(self, seq: int, stamp_ns: int) -> None:
         """Write the header. Called by the transports right before sending."""
-        self._airo_schema = type(self)._airo_fingerprint_
-        self._airo_seq = seq
-        self._airo_stamp_ns = stamp_ns
-        self._airo_flags = flags
-        self._airo_reserved = 0
+        _HEADER_STRUCT.pack_into(
+            self, 0, type(self)._airo_fingerprint_, seq, stamp_ns, 0
+        )
 
     def check_schema(self) -> None:
         """Raise :class:`SchemaMismatchError` if the header does not match this class."""
@@ -833,7 +803,7 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
 
     def to_bytes(self) -> bytes:
         """The raw message memory, header included. This is the network wire format."""
-        return bytes(memoryview(self).cast("B"))
+        return bytes(self)
 
     @classmethod
     def from_bytes(
@@ -858,10 +828,9 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
                 f"{cls.__name__}: expected {size} bytes, got {view.nbytes}. The sender probably "
                 f"uses a different message definition."
             )
-        received = int.from_bytes(view[:8], "little")
-        if received != cls._airo_fingerprint_:
-            raise SchemaMismatchError(_mismatch_message(cls, received))
-        return cls.from_buffer_copy(view) if copy else cls.from_buffer(view)
+        msg = cls.from_buffer_copy(view) if copy else cls.from_buffer(view)
+        msg.check_schema()
+        return msg
 
     def copy(self) -> Self:
         """An independent copy that owns its memory."""
@@ -891,6 +860,14 @@ class Message(ctypes.Structure, metaclass=_MessageMeta):
             else:
                 parts.append(f"{f.name}={getattr(self, f.name)!r}")
         return f"{type(self).__name__}({', '.join(parts)})"
+
+
+def _check_writable(obj: Message, field: str) -> None:
+    state = obj.__dict__.get("_airo_state")
+    if state == _STATE_READONLY:
+        raise ReadOnlyMessageError(_readonly_message(obj, field))
+    if state == _STATE_RELEASED:
+        raise LoanReleasedError(_released_message(obj, field))
 
 
 def _released_message(obj: Message, field: str) -> str:

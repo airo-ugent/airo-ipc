@@ -1,4 +1,4 @@
-"""Transport selection: ``Local()`` (iceoryx2, this host) or ``Network(...)`` (Zenoh).
+"""Transport selection: ``Local()`` (this host) or ``Network(...)`` (between hosts, Zenoh).
 
 Every factory takes the transport as a required argument, so the code always shows where the data
 goes::
@@ -39,7 +39,7 @@ ENV_NAMESPACE = "AIRO_IPC_NAMESPACE"
 
 #: Zenoh's default port; added to endpoints that have no port.
 DEFAULT_PORT = 7447
-#: Namespace used when neither `Network(namespace=...)` nor `AIRO_IPC_NAMESPACE` is set.
+#: Namespace used when neither `Network(namespace=...)` nor `ENV_NAMESPACE` is set.
 DEFAULT_NAMESPACE = "default"
 
 _SEGMENT = re.compile(r"[A-Za-z0-9_\-.]+")
@@ -67,7 +67,16 @@ def validate_topic(topic: str) -> str:
 
 @dataclass(frozen=True)
 class Local:
-    """iceoryx2 zero-copy shared memory between processes on this host."""
+    """Between processes on this host.
+
+    Publish/subscribe uses iceoryx2 zero-copy shared memory. Services (client/server) use Zenoh on
+    localhost, which never leaves this host; see "Services on Local()" in the README for why.
+
+    """
+
+    def resolve(self) -> ResolvedNetwork:
+        """The Zenoh settings of services on this host (see :data:`_LOCAL_SERVICES`)."""
+        return _LOCAL_SERVICES
 
 
 def _normalize_endpoint(endpoint: str) -> str:
@@ -119,13 +128,41 @@ class ResolvedNetwork:
     multicast: bool | None
     mode: Literal["peer", "client"] | None
     config: str | None
+    #: Interface (name or IP address) and ``group:port`` for multicast discovery; None: Zenoh's.
+    multicast_interface: str | None = None
+    multicast_address: str | None = None
 
     def session_key(self) -> tuple[object, ...]:
         """Endpoints that share this key share one Zenoh session."""
-        return (self.connect, self.listen, self.multicast, self.mode, self.config)
+        return (
+            self.connect,
+            self.listen,
+            self.multicast,
+            self.mode,
+            self.config,
+            self.multicast_interface,
+            self.multicast_address,
+        )
 
     def key_prefix(self) -> str:
         return f"airo_ipc/{self.namespace}"
+
+
+#: Zenoh settings for services on ``Local()``. Every process listens on a random port on
+#: 127.0.0.1, and the processes find each other with multicast on the loopback interface (given
+#: as an IP address, so the interface name does not matter). The discovery port differs from
+#: Zenoh's default (7446), so ``Network()`` sessions never see these peers, and the "@local"
+#: namespace cannot collide with a ``Network(namespace=...)``, which allows no "@".
+_LOCAL_SERVICES = ResolvedNetwork(
+    connect=(),
+    listen=("tcp/127.0.0.1:0",),
+    namespace="@local",
+    multicast=True,
+    mode="peer",
+    config=None,
+    multicast_interface="127.0.0.1",
+    multicast_address="224.0.0.224:7448",
+)
 
 
 @dataclass(frozen=True, init=False)

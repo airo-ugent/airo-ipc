@@ -30,10 +30,9 @@ def add(request: AddRequest) -> AddResponse:
 
 def serve(transport: ipc.Transport, stop: multiprocessing.synchronize.Event) -> None:  # type: ignore[name-defined]
     with ipc.Context() as ctx:
-        ctx.server(
-            "example/add", AddRequest, AddResponse, transport, add
-        )  # background thread
-        stop.wait()
+        server = ctx.server("example/add", AddRequest, AddResponse, transport, add)
+        while not stop.is_set():
+            server.spin_once(timeout=0.1)  # handles at most one request
 
 
 def main() -> None:

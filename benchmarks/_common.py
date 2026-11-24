@@ -1,10 +1,8 @@
-"""Helpers shared between the new-API and old-API benchmarks."""
+"""Helpers shared between the benchmarks."""
 
 import json
-import os
 import statistics
 from pathlib import Path
-from typing import Iterable
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,7 +56,7 @@ def print_summary(name: str, summary: dict) -> None:
 
 
 def transport_pairs() -> dict:
-    """(publisher-side, subscriber-side) transports for the new API.
+    """(publisher-side, subscriber-side) transports.
 
     Network uses two Zenoh sessions over loopback TCP with multicast off, like the tests.
     """

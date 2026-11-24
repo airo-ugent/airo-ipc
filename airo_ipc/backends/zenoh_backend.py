@@ -1,25 +1,28 @@
-"""Zenoh backend for ``Network(...)``: between hosts, and between processes on one host.
+"""Zenoh backend for ``Network(...)`` (between hosts) and for services on ``Local()``.
 
 Design notes (verified with eclipse-zenoh 1.10.2):
 
 - Wire format: the raw message bytes (header + fields), see :meth:`Message.to_bytes`.
 - Key expressions: ``airo_ipc/<namespace>/<topic>`` for topics, ``.../<topic>/@srv`` for
-  services, and liveliness tokens under ``.../<topic>/@pub/<id>`` and ``.../<topic>/@sub/<id>``
-  for ``has_publishers`` / ``has_subscribers``.
+  services, and liveliness tokens under ``.../<topic>/@pub/<id>`` for ``has_publishers``.
+  ``has_subscribers`` and ``has_server`` use Zenoh's matching status.
 - Zenoh's ``Handler.recv()`` has no timeout, so subscribers use a Python callback and a
   ``threading.Condition``.
 - A Python callback keeps the interpreter from exiting until its session is closed, and
   ``atexit`` runs too late for that. Sessions are therefore closed from a
   ``threading._register_atexit`` hook, which runs before Python joins non-daemon threads.
-- Latched publishers use the zenoh-ext advanced publisher cache; this needs
-  ``timestamping/enabled``. Subscribers are always advanced subscribers that ask late
-  publishers for their history.
 - Zenoh's own shared-memory transport is disabled unless a config file is given.
+- Every put, query and reply is sent with ``express=True``. Zenoh batches small messages for up
+  to 1 ms by default (``transport/link/tx/queue/batching/time_limit``). With batching, 1–3 % of
+  service calls took 1.1 ms instead of 75 µs; with ``express``, none took over 0.5 ms.
+- ``Local()`` services use the localhost-only settings of :meth:`Local.resolve
+  <airo_ipc.transport.Local.resolve>`: random ports, multicast discovery on loopback.
 """
 
 from __future__ import annotations
 
 import collections
+import ctypes
 import json
 import logging
 import queue
@@ -30,7 +33,6 @@ import weakref
 from typing import Any
 
 import zenoh
-import zenoh.ext as zext
 
 from airo_ipc.backends.base import ClientPort, PublisherPort, ServerPort, SubscriberPort
 from airo_ipc.errors import (
@@ -40,8 +42,7 @@ from airo_ipc.errors import (
     ServiceError,
 )
 from airo_ipc.message import Message
-from airo_ipc.qos import QoS
-from airo_ipc.transport import Network, ResolvedNetwork
+from airo_ipc.transport import Network, ResolvedNetwork, Transport
 
 __all__ = ["ZenohBackend"]
 
@@ -53,8 +54,6 @@ zenoh.init_log_from_env_or("error")
 _FOREVER_SECONDS = 365 * 24 * 3600.0
 
 _backends: weakref.WeakSet[ZenohBackend] = weakref.WeakSet()
-_hook_lock = threading.Lock()
-_hook_registered = False
 
 
 def _close_all_backends() -> None:
@@ -65,23 +64,9 @@ def _close_all_backends() -> None:
             pass
 
 
-def _register_exit_hook() -> None:
-    """Close sessions before Python waits for non-daemon threads at exit (see module doc)."""
-    global _hook_registered
-    with _hook_lock:
-        if _hook_registered:
-            return
-        _hook_registered = True
-        register = getattr(threading, "_register_atexit", None)
-        if register is not None:
-            try:
-                register(_close_all_backends)
-                return
-            except RuntimeError:  # pragma: no cover - already shutting down
-                return
-        import atexit  # pragma: no cover - fallback for Pythons without the private hook
-
-        atexit.register(_close_all_backends)  # pragma: no cover
+# Close sessions before Python waits for non-daemon threads at exit (see module doc). This
+# module is imported when the first Network() endpoint or service is created.
+threading._register_atexit(_close_all_backends)  # type: ignore[attr-defined]
 
 
 def _make_config(net: ResolvedNetwork) -> zenoh.Config:
@@ -94,7 +79,14 @@ def _make_config(net: ResolvedNetwork) -> zenoh.Config:
         config.insert_json5("listen/endpoints", json.dumps(list(net.listen)))
     if net.multicast is not None:
         config.insert_json5("scouting/multicast/enabled", json.dumps(net.multicast))
-    config.insert_json5("timestamping/enabled", "true")
+    if net.multicast_interface is not None:
+        config.insert_json5(
+            "scouting/multicast/interface", json.dumps(net.multicast_interface)
+        )
+    if net.multicast_address is not None:
+        config.insert_json5(
+            "scouting/multicast/address", json.dumps(net.multicast_address)
+        )
     if not net.config:
         config.insert_json5("transport/shared_memory/enabled", "false")
     return config
@@ -107,15 +99,11 @@ class ZenohBackend:
     session.
     """
 
-    #: Whether one client port may be used by several threads at once.
-    clients_thread_safe = True
-
     def __init__(self) -> None:
         self._sessions: dict[tuple[object, ...], zenoh.Session] = {}
         self._lock = threading.Lock()
         self._closed = False
         _backends.add(self)
-        _register_exit_hook()
 
     def session(self, net: ResolvedNetwork) -> zenoh.Session:
         key = net.session_key()
@@ -127,34 +115,39 @@ class ZenohBackend:
                 try:
                     session = zenoh.open(_make_config(net))
                 except Exception as e:
+                    hint = (
+                        " The port is probably in use by another process: choose another port."
+                        if "TCP listener" in str(e)
+                        else ""
+                    )
                     raise AiroIpcError(
-                        f"cannot open a Zenoh session for {net}: {type(e).__name__}: {e}"
+                        f"cannot open a Zenoh session for {net}: {type(e).__name__}: {e}.{hint}"
                     ) from e
                 self._sessions[key] = session
             return session
 
-    # The factories take the same arguments as those of the iceoryx2 backend.
+    # The pub/sub factories take the same arguments as those of the iceoryx2 backend.
 
     def publisher(
-        self, transport: Network, topic: str, msg_type: type[Message], latched: bool
+        self, transport: Network, topic: str, msg_type: type[Message]
     ) -> PublisherPort:
         net = transport.resolve()
-        return ZenohPublisherPort(self.session(net), net, topic, msg_type, latched)
+        return ZenohPublisherPort(self.session(net), net, topic, msg_type)
 
     def subscriber(
-        self, transport: Network, topic: str, msg_type: type[Message], qos: QoS
+        self, transport: Network, topic: str, msg_type: type[Message], depth: int
     ) -> SubscriberPort:
         net = transport.resolve()
-        return ZenohSubscriberPort(self.session(net), net, topic, msg_type, qos)
+        return ZenohSubscriberPort(self.session(net), net, topic, msg_type, depth)
 
     def client(
-        self, transport: Network, topic: str, req: type[Message], rep: type[Message]
+        self, transport: Transport, topic: str, req: type[Message], rep: type[Message]
     ) -> ClientPort:
         net = transport.resolve()
         return ZenohClientPort(self.session(net), net, topic, req, rep)
 
     def server(
-        self, transport: Network, topic: str, req: type[Message], rep: type[Message]
+        self, transport: Transport, topic: str, req: type[Message], rep: type[Message]
     ) -> ServerPort:
         net = transport.resolve()
         return ZenohServerPort(self.session(net), net, topic, req, rep)
@@ -183,8 +176,16 @@ def _undeclare(*objects: Any) -> None:
             pass
 
 
+def _matching(entity: Any) -> bool:
+    """True if a Zenoh publisher or querier has a matching subscriber or queryable."""
+    status: Any = (
+        entity.matching_status
+    )  # the stub says bool; at runtime it has .matching
+    return bool(getattr(status, "matching", status))
+
+
 class _Liveliness:
-    """Tracks the liveliness tokens under one key expression (``.../@pub/*`` or ``.../@sub/*``)."""
+    """Tracks the liveliness tokens under one key expression (``.../@pub/*``)."""
 
     def __init__(self, session: zenoh.Session, key_expr: str) -> None:
         self._alive: set[str] = set()
@@ -222,128 +223,82 @@ class ZenohPublisherPort(PublisherPort):
         net: ResolvedNetwork,
         topic: str,
         msg_type: type[Message],
-        latched: bool,
     ) -> None:
         key = f"{net.key_prefix()}/{topic}"
         self._msg_type = msg_type
-        self._publisher: Any
-        if latched:
-            self._publisher = zext.declare_advanced_publisher(
-                session, key, cache=zext.CacheConfig(1), publisher_detection=True
-            )
-        else:
-            self._publisher = session.declare_publisher(key)
+        self._publisher = session.declare_publisher(key, express=True)
         self._token = session.liveliness().declare_token(
             f"{key}/@pub/{uuid.uuid4().hex}"
         )
-        self._subscribers = _Liveliness(session, f"{key}/@sub/*")
-        self._buffer = bytearray(_sizeof(msg_type))
-        self._buffer_in_use = False
-        self._closed = False
+        # Buffers of ended loans. put() copies the bytes, so a buffer is free again after it.
+        self._free: list[bytearray] = []
 
     def loan(self) -> tuple[Message, Any]:
-        if self._buffer_in_use:  # nested loans: give the inner one its own buffer
-            buffer = bytearray(_sizeof(self._msg_type))
-        else:
-            self._buffer_in_use = True
-            buffer = self._buffer
+        try:
+            buffer = self._free.pop()
+        except IndexError:
+            buffer = bytearray(ctypes.sizeof(self._msg_type))
         return self._msg_type.from_buffer(buffer), buffer
 
     def send(self, token: Any) -> None:
         try:
             self._publisher.put(token)
         finally:
-            self._release_buffer(token)
+            self._free.append(token)
 
     def discard(self, token: Any) -> None:
-        self._release_buffer(token)
-
-    def _release_buffer(self, buffer: bytearray) -> None:
-        if buffer is self._buffer:
-            self._buffer_in_use = False
+        self._free.append(token)
 
     def send_copy(self, msg: Message) -> None:
         self._publisher.put(msg.to_bytes())
 
     @property
     def has_subscribers(self) -> bool:
-        return self._subscribers.any_alive
+        return _matching(self._publisher)
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._subscribers.close()
-            _undeclare(self._token, self._publisher)
-
-
-def _sizeof(msg_type: type[Message]) -> int:
-    import ctypes
-
-    return ctypes.sizeof(msg_type)
+        _undeclare(self._token, self._publisher)
 
 
 class ZenohSubscriberPort(SubscriberPort):
-    owned_messages = True
-
     def __init__(
         self,
         session: zenoh.Session,
         net: ResolvedNetwork,
         topic: str,
         msg_type: type[Message],
-        qos: QoS,
+        depth: int,
     ) -> None:
         key = f"{net.key_prefix()}/{topic}"
-        self._topic = topic
         self._msg_type = msg_type
-        self._queue: collections.deque[Message] = collections.deque(maxlen=qos.depth)
-        self._error: Exception | None = None
+        # Raw payloads: take() decodes them, so a message dropped from a full queue is never
+        # decoded.
+        self._queue: collections.deque[zenoh.ZBytes] = collections.deque(maxlen=depth)
         self._cond = threading.Condition()
-        self._subscriber = zext.declare_advanced_subscriber(
-            session,
-            key,
-            self._on_sample,
-            history=zext.HistoryConfig(detect_late_publishers=True, max_samples=1),
-        )
-        self._token = session.liveliness().declare_token(
-            f"{key}/@sub/{uuid.uuid4().hex}"
-        )
+        self._subscriber = session.declare_subscriber(key, self._on_sample)
         self._publishers = _Liveliness(session, f"{key}/@pub/*")
-        self._closed = False
 
     def _on_sample(self, sample: zenoh.Sample) -> None:
         if sample.kind != zenoh.SampleKind.PUT:
             return
-        try:
-            msg = self._msg_type.from_bytes(sample.payload.to_bytes())
-        except (SchemaMismatchError, ValueError) as e:
-            with self._cond:
-                self._error = e
-                self._cond.notify_all()
-            return
         with self._cond:
-            self._queue.append(msg)
+            self._queue.append(sample.payload)
             self._cond.notify_all()
 
     def take(self) -> tuple[Message, Any] | None:
         with self._cond:
-            if self._error is not None:
-                error, self._error = self._error, None
-                if isinstance(error, ValueError):
-                    raise SchemaMismatchError(
-                        f"received a message on '{self._topic}' with the wrong size: {error}"
-                    ) from error
-                raise error
-            if self._queue:
-                return self._queue.popleft(), None
-            return None
+            if not self._queue:
+                return None
+            payload = self._queue.popleft()
+        # Raises SchemaMismatchError if the sender uses a different message definition.
+        return self._msg_type.from_bytes(payload.to_bytes()), None
 
     def release(self, holder: Any) -> None:
         pass
 
     def wait(self, timeout: float) -> None:
         with self._cond:
-            if not self._queue and self._error is None:
+            if not self._queue:
                 self._cond.wait(timeout)
 
     @property
@@ -351,12 +306,8 @@ class ZenohSubscriberPort(SubscriberPort):
         return self._publishers.any_alive
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._publishers.close()
-            _undeclare(self._token, self._subscriber)
-            with self._cond:
-                self._cond.notify_all()
+        self._publishers.close()
+        _undeclare(self._subscriber)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -379,12 +330,16 @@ class ZenohClientPort(ClientPort):
         self._response_type = response_type
         # Only used for its matching status (is a server reachable?).
         self._querier = session.declare_querier(self._key)
-        self._closed = False
 
     def call(self, request: Message, timeout: float | None) -> Message:
         effective = _FOREVER_SECONDS if timeout is None else max(timeout, 1e-3)
         replies = self._session.get(
-            self._key, payload=request.to_bytes(), timeout=effective
+            self._key,
+            payload=request.to_bytes(),
+            timeout=effective,
+            express=True,
+            # Deliver the first reply at once; the default waits until the query is finalized.
+            consolidation=zenoh.ConsolidationMode.NONE,
         )
         for reply in replies:
             ok = reply.ok
@@ -403,22 +358,17 @@ class ZenohClientPort(ClientPort):
                     )
                 raise ServiceError(text)
         if not self.has_server:
-            raise NoServerError(f"no server for service '{self._topic}' on Network()")
+            raise NoServerError(f"no server for service '{self._topic}'")
         raise TimeoutError(
             f"no response from service '{self._topic}' within {timeout} s"
         )
 
     @property
     def has_server(self) -> bool:
-        status: Any = (
-            self._querier.matching_status
-        )  # the stub says bool; runtime: object
-        return bool(getattr(status, "matching", status))
+        return _matching(self._querier)
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            _undeclare(self._querier)
+        _undeclare(self._querier)
 
 
 class ZenohServerPort(ServerPort):
@@ -436,7 +386,6 @@ class ZenohServerPort(ServerPort):
         self._queryable = session.declare_queryable(
             f"{net.key_prefix()}/{topic}/@srv", self._queries.put
         )
-        self._closed = False
 
     def receive(self, timeout: float) -> tuple[Message, Any] | None:
         deadline = time.monotonic() + timeout
@@ -450,36 +399,35 @@ class ZenohServerPort(ServerPort):
                 request = self._request_type.from_bytes(
                     payload.to_bytes() if payload is not None else b""
                 )
-            except (SchemaMismatchError, ValueError) as e:
+            except SchemaMismatchError as e:
                 logger.error(
                     "service '%s' received an invalid request: %s", self._topic, e
                 )
-                self.reply_error(query, f"{type(e).__name__}: {e}")
+                self.reply_error(query, e)
                 continue
             return request, query
 
     def reply(self, token: Any, response: Message) -> None:
         try:
-            token.reply(token.key_expr, response.to_bytes())
+            token.reply(token.key_expr, response.to_bytes(), express=True)
         finally:
             token.drop()
 
-    def reply_error(self, token: Any, error: str) -> None:
+    def reply_error(self, token: Any, error: BaseException) -> None:
         try:
-            token.reply_err(error.encode("utf-8"))
+            # ZenohClientPort.call parses this "<Type>: <text>" format.
+            token.reply_err(f"{type(error).__name__}: {error}".encode("utf-8"))
         finally:
             token.drop()
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            _undeclare(self._queryable)
-            while True:
-                try:
-                    query = self._queries.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    self.reply_error(query, "AiroIpcError: the server was closed")
-                except Exception:  # pragma: no cover - session already closed
-                    pass
+        _undeclare(self._queryable)
+        while True:
+            try:
+                query = self._queries.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.reply_error(query, AiroIpcError("the server was closed"))
+            except Exception:  # pragma: no cover - session already closed
+                pass

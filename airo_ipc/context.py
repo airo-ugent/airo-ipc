@@ -1,7 +1,7 @@
 """Context: owns the transport resources (iceoryx2 node, Zenoh sessions) of one process.
 
 Most code uses the module-level functions (``airo_ipc.publisher(...)``), which use a default
-context per process. Create a :class:`Context` explicitly to control lifetime or sizing::
+context per process. Create a :class:`Context` explicitly to control the lifetime::
 
     with ipc.Context() as ctx:
         pub = ctx.publisher("camera/front", CameraFrame, ipc.Local())
@@ -15,11 +15,10 @@ import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from airo_ipc.defaults import Iox2Sizing
+from airo_ipc.backends.base import MAX_QUEUE_DEPTH
 from airo_ipc.endpoints import Client, Publisher, Server, Subscriber
 from airo_ipc.errors import ClosedError
 from airo_ipc.message import Message
-from airo_ipc.qos import Latest, QoS, Queue
 from airo_ipc.transport import Local, Network, Transport, validate_topic
 
 if TYPE_CHECKING:
@@ -31,17 +30,17 @@ __all__ = ["Context", "default_context"]
 M = TypeVar("M", bound=Message)
 Req = TypeVar("Req", bound=Message)
 Rep = TypeVar("Rep", bound=Message)
+E = TypeVar("E")
 
 
 def _check_message_type(what: str, msg_type: object) -> None:
     if not (isinstance(msg_type, type) and issubclass(msg_type, Message)):
         raise TypeError(f"{what} must be a Message subclass, got {msg_type!r}")
-    if msg_type._airo_abstract_:
-        raise TypeError(msg_type._abstract_error())
+    msg_type._require_concrete()
 
 
 def _check_transport(transport: object) -> None:
-    if not isinstance(transport, (Local, Network)):
+    if not isinstance(transport, Transport):
         hint = (
             " (pass an instance: Local(), not Local)"
             if transport in (Local, Network)
@@ -57,18 +56,14 @@ class Context:
 
     A context belongs to the process that created it. Create a new one in a child process
     (``multiprocessing`` with the "spawn" start method, or after ``fork``).
-
-    Args:
-        iox2: iceoryx2 sizing. Every process of a system must use the same sizing.
     """
 
-    def __init__(self, *, iox2: Iox2Sizing | None = None) -> None:
+    def __init__(self) -> None:
         self._pid = os.getpid()
-        self._iox2_sizing = iox2 or Iox2Sizing()
         self._iox2: Iox2Backend | None = None
         self._zenoh: ZenohBackend | None = None
         self._endpoints: weakref.WeakSet[Any] = weakref.WeakSet()
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._closed = False
 
     # -- factories ------------------------------------------------------------------------
@@ -78,8 +73,6 @@ class Context:
         topic: str,
         msg_type: type[M],
         transport: Transport,
-        *,
-        latched: bool = False,
     ) -> Publisher[M]:
         """Create a publisher.
 
@@ -87,14 +80,17 @@ class Context:
             topic: Topic name, for example ``"camera/front/rgb"``.
             msg_type: The concrete :class:`~airo_ipc.message.Message` class.
             transport: ``Local()`` or ``Network(...)``.
-            latched: Keep the last message for subscribers that connect later.
         """
         self._check_args(topic, transport, ("msg_type", msg_type))
-        with self._lock:
-            port = self._backend(transport).publisher(
-                transport, topic, msg_type, latched
-            )
-            return self._track(Publisher(port, topic, msg_type, transport, latched))
+
+        def make() -> Publisher[M]:
+            if isinstance(transport, Local):
+                port = self._iox2_backend().publisher(topic, msg_type)
+            else:
+                port = self._zenoh_backend().publisher(transport, topic, msg_type)
+            return Publisher(port, topic, msg_type, transport)
+
+        return self._create(make)
 
     def subscriber(
         self,
@@ -102,7 +98,7 @@ class Context:
         msg_type: type[M],
         transport: Transport,
         *,
-        qos: QoS = Latest(),
+        depth: int = 1,
     ) -> Subscriber[M]:
         """Create a subscriber.
 
@@ -110,14 +106,28 @@ class Context:
             topic: Topic name.
             msg_type: The concrete :class:`~airo_ipc.message.Message` class.
             transport: ``Local()`` or ``Network(...)``.
-            qos: ``Latest()`` (default: newest message only) or ``Queue(depth)``.
+            depth: Unread messages to keep, oldest first; when full, the oldest is dropped (the
+                publisher never blocks). 1 (default): only the newest message, right for sensor
+                streams. At most :data:`~airo_ipc.backends.base.MAX_QUEUE_DEPTH`.
         """
         self._check_args(topic, transport, ("msg_type", msg_type))
-        if not isinstance(qos, (Latest, Queue)):
-            raise TypeError(f"qos must be Latest() or Queue(depth), got {qos!r}")
-        with self._lock:
-            port = self._backend(transport).subscriber(transport, topic, msg_type, qos)
-            return self._track(Subscriber(port, topic, msg_type, transport))
+        if isinstance(depth, bool) or not isinstance(depth, int):
+            raise TypeError(f"depth must be an int, got {depth!r}")
+        if not 1 <= depth <= MAX_QUEUE_DEPTH:
+            raise ValueError(
+                f"depth must be between 1 and {MAX_QUEUE_DEPTH}, got {depth}"
+            )
+
+        def make() -> Subscriber[M]:
+            if isinstance(transport, Local):
+                port = self._iox2_backend().subscriber(topic, msg_type, depth)
+            else:
+                port = self._zenoh_backend().subscriber(
+                    transport, topic, msg_type, depth
+                )
+            return Subscriber(port, topic, msg_type, transport)
+
+        return self._create(make)
 
     def client(
         self,
@@ -126,26 +136,27 @@ class Context:
         response_type: type[Rep],
         transport: Transport,
     ) -> Client[Req, Rep]:
-        """Create a service client. Call it with ``client.call(request)``."""
+        """Create a service client. Call it with ``client.call(request)``.
+
+        Services use Zenoh on both transports; on ``Local()`` it stays on this host.
+        """
         self._check_args(
             topic,
             transport,
             ("request_type", request_type),
             ("response_type", response_type),
         )
-        with self._lock:
-            backend = self._backend(transport)
-            port = backend.client(transport, topic, request_type, response_type)
-            return self._track(
-                Client(
-                    port,
-                    topic,
-                    request_type,
-                    response_type,
-                    transport,
-                    backend.clients_thread_safe,
-                )
-            )
+        return self._create(
+            lambda: Client(
+                self._zenoh_backend().client(
+                    transport, topic, request_type, response_type
+                ),
+                topic,
+                request_type,
+                response_type,
+                transport,
+            ),
+        )
 
     def server(
         self,
@@ -154,16 +165,12 @@ class Context:
         response_type: type[Rep],
         transport: Transport,
         handler: Callable[[Req], Rep],
-        *,
-        spin: bool = True,
     ) -> Server[Req, Rep]:
-        """Create a service server.
+        """Create a service server. Call ``server.spin_once(timeout)`` in your own loop.
 
         Args:
-            handler: Called with each request; returns the response. If it raises, the client
-                gets a :class:`~airo_ipc.errors.ServiceError`.
-            spin: True (default): handle requests on a background thread. False: call
-                ``server.spin_once(timeout)`` in your own loop.
+            handler: Called by ``spin_once()`` with each request; returns the response. If it
+                raises, the client gets a :class:`~airo_ipc.errors.ServiceError`.
         """
         self._check_args(
             topic,
@@ -173,14 +180,18 @@ class Context:
         )
         if not callable(handler):
             raise TypeError(f"handler must be callable, got {handler!r}")
-        with self._lock:
-            backend = self._backend(transport)
-            port = backend.server(transport, topic, request_type, response_type)
-            return self._track(
-                Server(
-                    port, topic, request_type, response_type, transport, handler, spin
-                )
-            )
+        return self._create(
+            lambda: Server(
+                self._zenoh_backend().server(
+                    transport, topic, request_type, response_type
+                ),
+                topic,
+                request_type,
+                response_type,
+                transport,
+                handler,
+            ),
+        )
 
     # -- lifetime -------------------------------------------------------------------------
 
@@ -221,8 +232,6 @@ class Context:
     def _check_args(
         self, topic: str, transport: object, *types: tuple[str, object]
     ) -> None:
-        if self._closed:
-            raise ClosedError("the context is closed")
         if os.getpid() != self._pid:
             raise RuntimeError(
                 f"this Context was created in process {self._pid}; create a new Context in "
@@ -233,23 +242,24 @@ class Context:
         for what, msg_type in types:
             _check_message_type(what, msg_type)
 
-    def _track(self, endpoint: Any) -> Any:
-        self._endpoints.add(endpoint)
-        return endpoint
+    def _create(self, make: Callable[[], E]) -> E:
+        """Build an endpoint with ``make()`` and track it, so that ``close()`` closes it.
 
-    def _backend(self, transport: Transport) -> Any:
-        """The backend for ``transport``. Both backends have the same factory signatures."""
-        return (
-            self._iox2_backend()
-            if isinstance(transport, Local)
-            else self._zenoh_backend()
-        )
+        Pub/sub on ``Local()`` uses iceoryx2; everything else (``Network()``, and services on
+        both transports) uses Zenoh.
+        """
+        with self._lock:
+            if self._closed:
+                raise ClosedError("the context is closed")
+            endpoint = make()
+            self._endpoints.add(endpoint)
+            return endpoint
 
     def _iox2_backend(self) -> Iox2Backend:
         if self._iox2 is None:
             from airo_ipc.backends.iox2_backend import Iox2Backend
 
-            self._iox2 = Iox2Backend(self._iox2_sizing)
+            self._iox2 = Iox2Backend()
         return self._iox2
 
     def _zenoh_backend(self) -> ZenohBackend:

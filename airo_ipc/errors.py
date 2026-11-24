@@ -26,7 +26,7 @@ class TooManyLoansError(AiroIpcError):
     """A subscriber holds too many received loans at the same time.
 
     Each live ``receive_loan()`` view keeps one shared-memory sample borrowed. Release views (let
-    them go out of scope) or copy the data, or raise ``Iox2Sizing.max_borrowed_per_subscriber``.
+    them go out of scope), or copy the data inside the ``with`` block.
     """
 
 

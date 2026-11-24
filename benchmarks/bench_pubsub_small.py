@@ -1,4 +1,4 @@
-"""Small-message pub/sub latency for the 1.0 API (iceoryx2 + Zenoh).
+"""Small-message pub/sub latency (iceoryx2 on Local(), Zenoh on Network()).
 
 One-way send -> receive latency between two processes. The publisher writes
 time.monotonic_ns() into the message; the subscriber blocks in receive() (event-based, no
@@ -6,19 +6,16 @@ spin-polling) and computes the difference on arrival.
 """
 
 import multiprocessing
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import (
     print_summary,
     summarize,
     transport_pairs,
     write_result,
-)  # noqa: E402
+)
 
-import airo_ipc as ipc  # noqa: E402
+import airo_ipc as ipc
 
 
 class TimedPoint(ipc.Message):
@@ -43,7 +40,7 @@ def run(
 ) -> dict:
     topic = f"bench/pubsub_small/{name}"
     pub_transport, sub_transport = pair
-    sub = ipc.subscriber(topic, TimedPoint, sub_transport, qos=ipc.Queue(16))
+    sub = ipc.subscriber(topic, TimedPoint, sub_transport, depth=ipc.MAX_QUEUE_DEPTH)
     proc = multiprocessing.get_context("spawn").Process(
         target=_publisher, args=(topic, pub_transport, n + warmup, period_s)
     )
@@ -66,9 +63,9 @@ def run(
 
 if __name__ == "__main__":
     print("Running 1.0 pub/sub small-message benchmark...")
-    payload = {"benchmark": "pubsub_small", "api": "new", "results": {}}
+    payload = {"benchmark": "pubsub_small", "results": {}}
     for name, pair in transport_pairs().items():
         summary = run(name, pair)
         payload["results"][name] = summary
-        print_summary(f"new / pubsub_small / {name}", summary)
-    print(f"\nwrote {write_result('new_pubsub_small', payload)}")
+        print_summary(f"pubsub_small / {name}", summary)
+    print(f"\nwrote {write_result('pubsub_small', payload)}")

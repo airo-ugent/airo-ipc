@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -30,6 +31,21 @@ def wait_until(condition: Callable[[], bool], timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.01)
     return condition()
+
+
+def spin_in_thread(server: ipc.Server) -> threading.Thread:  # type: ignore[type-arg]
+    """Call ``server.spin_once()`` in a daemon thread until the server is closed."""
+
+    def loop() -> None:
+        while not server.closed:
+            try:
+                server.spin_once(0.05)
+            except ipc.ClosedError:
+                return
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    return thread
 
 
 @dataclass

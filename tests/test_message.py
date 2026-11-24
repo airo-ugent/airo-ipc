@@ -58,7 +58,7 @@ def test_header_is_first_32_bytes() -> None:
     assert Point._airo_schema.offset == 0  # type: ignore[attr-defined]
     assert Point._airo_seq.offset == 8  # type: ignore[attr-defined]
     assert Point._airo_stamp_ns.offset == 16  # type: ignore[attr-defined]
-    assert Point._airo_flags.offset == 24  # type: ignore[attr-defined]
+    assert Point._airo_reserved.offset == 24  # type: ignore[attr-defined]
     assert Point.x.offset == HEADER_SIZE  # type: ignore[attr-defined]
 
 
@@ -477,8 +477,9 @@ def test_end_loan_reports_no_escape_when_views_are_gone() -> None:
     assert f._airo_end_loan() is False
 
 
-def test_set_meta_writes_flags() -> None:
+def test_set_meta_writes_header() -> None:
     p = Point(x=1.0)
-    p._airo_set_meta(seq=1, stamp_ns=2, flags=1)
-    assert p._airo_flags == 1
-    assert Point.from_bytes(p.to_bytes())._airo_flags == 1
+    p._airo_set_meta(seq=1, stamp_ns=2)
+    q = Point.from_bytes(p.to_bytes())
+    assert q.meta == MessageMeta(seq=1, stamp_ns=2)
+    assert q._airo_reserved == 0 and q.x == 1.0

@@ -1,4 +1,4 @@
-"""Image pub/sub latency for the 1.0 API (iceoryx2 + Zenoh).
+"""Image pub/sub latency (iceoryx2 on Local(), Zenoh on Network()).
 
 A 480x640x3 uint8 image (~900 KB, a webcam frame). The publisher writes the image with
 pub.loan() (zero-copy on Local()). The subscriber reads it either with receive() (an owned copy)
@@ -7,22 +7,19 @@ both modes then touch every pixel (sum) outside the timed region.
 """
 
 import multiprocessing
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import (
     print_summary,
     summarize,
     transport_pairs,
     write_result,
-)  # noqa: E402
+)
 
-import airo_ipc as ipc  # noqa: E402
+import airo_ipc as ipc
 
 H, W = 480, 640
 
@@ -56,7 +53,7 @@ def run(
 ) -> dict:
     topic = f"bench/pubsub_image/{name}/{mode}"
     pub_transport, sub_transport = pair
-    sub = ipc.subscriber(topic, Frame, sub_transport, qos=ipc.Queue(16))
+    sub = ipc.subscriber(topic, Frame, sub_transport, depth=ipc.MAX_QUEUE_DEPTH)
     proc = multiprocessing.get_context("spawn").Process(
         target=_publisher, args=(topic, pub_transport, n + warmup, period_s)
     )
@@ -93,10 +90,10 @@ def run(
 
 if __name__ == "__main__":
     print(f"Running 1.0 pub/sub image benchmark ({H}x{W}x3 = {H * W * 3} bytes)...")
-    payload = {"benchmark": "pubsub_image", "api": "new", "results": {}}
+    payload = {"benchmark": "pubsub_image", "results": {}}
     for name, pair in transport_pairs().items():
         for mode in ("copy", "loan", "loan_spin"):
             summary = run(name, pair, mode)
             payload["results"][f"{name}_{mode}"] = summary
-            print_summary(f"new / pubsub_image / {name} / {mode}", summary)
-    print(f"\nwrote {write_result('new_pubsub_image', payload)}")
+            print_summary(f"pubsub_image / {name} / {mode}", summary)
+    print(f"\nwrote {write_result('pubsub_image', payload)}")

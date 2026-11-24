@@ -1,4 +1,4 @@
-"""Services (client/server), identical on Local() and Network()."""
+"""Services (client/server), identical on Local() and Network() (both use Zenoh)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from numpy.typing import NDArray
 
 import airo_ipc as ipc
-from conftest import Pair, wait_until
+from conftest import Pair, free_port, spin_in_thread, wait_until
 
 
 class AddRequest(ipc.Message):
@@ -40,8 +40,11 @@ def add(request: AddRequest) -> AddResponse:
     return AddResponse(total=request.a + request.b)
 
 
-def serve(pair: Pair, topic: str, **kwargs: object) -> tuple[ipc.Server, ipc.Client]:  # type: ignore[type-arg]
-    server = pair.a.server(topic, AddRequest, AddResponse, pair.ta, add, **kwargs)  # type: ignore[arg-type]
+def serve(pair: Pair, topic: str, spin: bool = True) -> tuple[ipc.Server, ipc.Client]:  # type: ignore[type-arg]
+    """A server on A (spinning in a thread if ``spin``) and a client on B that sees it."""
+    server = pair.a.server(topic, AddRequest, AddResponse, pair.ta, add)
+    if spin:
+        spin_in_thread(server)
     client = pair.b.client(topic, AddRequest, AddResponse, pair.tb)
     assert client.wait_for_server(timeout=5)
     return server, client
@@ -65,7 +68,8 @@ def test_handler_exception_becomes_service_error(pair: Pair, topic: str) -> None
 
 
 def test_handler_returning_wrong_type(pair: Pair, topic: str) -> None:
-    pair.a.server(topic, AddRequest, AddResponse, pair.ta, lambda r: AddRequest(a=0.0, b=0.0))  # type: ignore[arg-type, return-value]
+    server = pair.a.server(topic, AddRequest, AddResponse, pair.ta, lambda r: AddRequest(a=0.0, b=0.0))  # type: ignore[arg-type, return-value]
+    spin_in_thread(server)
     client = pair.b.client(topic, AddRequest, AddResponse, pair.tb)
     assert client.wait_for_server(timeout=5)
     with pytest.raises(ipc.ServiceError, match="TypeError"):
@@ -95,12 +99,6 @@ def test_timeout(pair: Pair, topic: str) -> None:
     assert client.call(AddRequest(a=2.0, b=2.0)).total == 4.0
 
 
-def test_call_async_and_concurrent_calls(pair: Pair, topic: str) -> None:
-    _, client = serve(pair, topic)
-    futures = [client.call_async(AddRequest(a=float(i), b=1.0)) for i in range(10)]
-    assert [f.result(timeout=10).total for f in futures] == [i + 1.0 for i in range(10)]
-
-
 def test_several_clients(pair: Pair, topic: str) -> None:
     serve(pair, topic)
     clients = [pair.b.client(topic, AddRequest, AddResponse, pair.tb) for _ in range(3)]
@@ -123,12 +121,17 @@ def test_several_clients(pair: Pair, topic: str) -> None:
     assert sorted(results) == [0.0, 2.0, 4.0]
 
 
-def test_manual_spin(pair: Pair, topic: str) -> None:
+def test_spin_once(pair: Pair, topic: str) -> None:
     server, client = serve(pair, topic, spin=False)
     assert server.spin_once(0.01) is False  # nothing to do
-    future = client.call_async(AddRequest(a=4.0, b=5.0))
+    results: list[float] = []
+    caller = threading.Thread(
+        target=lambda: results.append(client.call(AddRequest(a=4.0, b=5.0)).total)
+    )
+    caller.start()
     assert wait_until(lambda: server.spin_once(0.05), timeout=5)
-    assert future.result(timeout=5).total == 9.0
+    caller.join(5)
+    assert results == [9.0]
 
 
 def test_spin_once_zero_timeout_returns_at_once(pair: Pair, topic: str) -> None:
@@ -139,19 +142,13 @@ def test_spin_once_zero_timeout_returns_at_once(pair: Pair, topic: str) -> None:
     assert time.monotonic() - start < 0.5
 
 
-def test_spin_once_not_allowed_with_background_thread(pair: Pair, topic: str) -> None:
-    server, _ = serve(pair, topic)
-    with pytest.raises(RuntimeError, match="spin=True"):
-        server.spin_once()
-
-
 def test_array_payloads(pair: Pair, topic: str) -> None:
     def invert(request: Image) -> Image:
         response = type(request)()
         response.pixels = 255 - request.pixels
         return response
 
-    pair.a.server(topic, Small, Small, pair.ta, invert)
+    spin_in_thread(pair.a.server(topic, Small, Small, pair.ta, invert))
     client = pair.b.client(topic, Small, Small, pair.tb)
     assert client.wait_for_server(timeout=5)
     request = Small()
@@ -161,22 +158,19 @@ def test_array_payloads(pair: Pair, topic: str) -> None:
 
 
 def test_schema_mismatch(pair: Pair, topic: str) -> None:
-    pair.a.server(topic, Small, Small, pair.ta, lambda r: r)
-    if not pair.is_network:
-        with pytest.raises(ipc.SchemaMismatchError):
-            pair.b.client(topic, Wrong, Small, pair.tb)
-        return
+    spin_in_thread(pair.a.server(topic, Small, Small, pair.ta, lambda r: r))
     client = pair.b.client(topic, Wrong, Small, pair.tb)
     assert client.wait_for_server(timeout=5)
     with pytest.raises(ipc.SchemaMismatchError):
         client.call(Wrong())
 
 
-def test_second_local_server_fails(topic: str) -> None:
-    with ipc.Context() as ctx:
-        ctx.server(topic, AddRequest, AddResponse, ipc.Local(), add)
-        with pytest.raises(ipc.AiroIpcError, match="too many"):
-            ctx.server(topic, AddRequest, AddResponse, ipc.Local(), add)
+def test_listen_port_in_use(topic: str) -> None:
+    transport = ipc.Network(listen=f"tcp/127.0.0.1:{free_port()}", multicast=False)
+    with ipc.Context() as a, ipc.Context() as b:
+        a.server(topic, AddRequest, AddResponse, transport, add)
+        with pytest.raises(ipc.AiroIpcError, match="choose another port"):
+            b.server(f"{topic}/2", AddRequest, AddResponse, transport, add)
 
 
 def test_server_close_stops_serving(pair: Pair, topic: str) -> None:

@@ -1,7 +1,8 @@
 """airo-ipc: one message class, two transports.
 
-``Local()`` uses iceoryx2 zero-copy shared memory on one host; ``Network(...)`` uses Zenoh between
-hosts. Publish/subscribe and services (client/server) work the same on both::
+``Local()`` connects processes on one host (iceoryx2 zero-copy shared memory for publish/subscribe);
+``Network(...)`` uses Zenoh between hosts. Publish/subscribe and services (client/server) work the
+same on both::
 
     import numpy as np
     from numpy.typing import NDArray
@@ -16,8 +17,8 @@ hosts. Publish/subscribe and services (client/server) work the same on both::
 """
 
 from airo_ipc.api import client, publisher, server, subscriber
+from airo_ipc.backends.base import MAX_QUEUE_DEPTH
 from airo_ipc.context import Context, default_context
-from airo_ipc.defaults import Iox2Sizing
 from airo_ipc.endpoints import Client, Publisher, Server, Subscriber
 from airo_ipc.errors import (
     AiroIpcError,
@@ -44,7 +45,6 @@ from airo_ipc.message import (
     u32,
     u64,
 )
-from airo_ipc.qos import MAX_QUEUE_DEPTH, Latest, QoS, Queue
 from airo_ipc.transport import Local, Network, Transport
 
 __all__ = [
@@ -53,8 +53,6 @@ __all__ = [
     "Client",
     "ClosedError",
     "Context",
-    "Iox2Sizing",
-    "Latest",
     "LoanReleasedError",
     "Local",
     "MAX_QUEUE_DEPTH",
@@ -63,8 +61,6 @@ __all__ = [
     "Network",
     "NoServerError",
     "Publisher",
-    "QoS",
-    "Queue",
     "ReadOnlyMessageError",
     "SchemaMismatchError",
     "Server",

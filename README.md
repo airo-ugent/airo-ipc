@@ -3,8 +3,9 @@
 Fast inter-process communication for robotics in Python. You write **one message class** and pick
 a transport per endpoint:
 
-- **`Local()`**: [iceoryx2](https://iceoryx2.org/) zero-copy shared memory between processes on
-  one host.
+- **`Local()`**: between processes on one host. Publish/subscribe uses
+  [iceoryx2](https://iceoryx2.org/) zero-copy shared memory; services use Zenoh on localhost
+  (see [Services on `Local()`](#services-on-local)).
 - **`Network(...)`**: [Zenoh](https://zenoh.io/) between hosts (and between processes on one
   host).
 
@@ -48,7 +49,7 @@ goes. The topic name and the message class are the same for both.
 
 | | `Local()` | `Network(...)` |
 |---|---|---|
-| Library | iceoryx2 | Zenoh |
+| Library | iceoryx2 (pub/sub), Zenoh on localhost (services) | Zenoh |
 | Scope | processes on one host | hosts on a network (also works on one host) |
 | Copies | zero-copy with `loan()` / `receive_loan()` | serialized over TCP/UDP (raw bytes, no encoding) |
 | Typical latency (900 KB image) | 20–160 µs | 0.7 ms on loopback |
@@ -115,15 +116,16 @@ sub = ipc.subscriber("robot/state", RobotState, transport)
 msg = sub.receive()               # does not wait: a message or None
 msg = sub.receive(timeout=1.0)    # waits up to 1 s (event-based, no polling)
 msg = sub.receive(timeout=None)   # waits until a message arrives
-sub.on_message(callback)          # callback(msg) on a background thread
 ```
 
-**Quality of service.** `qos=ipc.Latest()` (default) keeps only the newest unread message: right
-for sensor streams. `qos=ipc.Queue(depth)` keeps up to `depth` (max. 16) messages in order. In
-both cases the publisher never blocks; when a queue is full, the oldest message is dropped.
+**Queue depth.** `ipc.subscriber(..., depth=1)` (the default) keeps only the newest unread
+message: right for sensor streams. `depth=n` keeps up to `n` messages in order (at most
+`ipc.MAX_QUEUE_DEPTH`). The publisher never blocks; when the queue is full, the oldest message is
+dropped.
 
-**Late joiners.** `ipc.publisher(..., latched=True)` keeps the last message for subscribers that
-connect later: use it for state such as a resolution or a configuration.
+**Late joiners.** A subscriber receives only messages published after it connected. For state
+that a process needs at startup, such as a resolution or a configuration, use a service: the
+owner serves the current value, and a process that starts later asks for it (see below).
 
 **Discovery.** `pub.has_subscribers` and `sub.has_publishers` tell whether the other side is
 connected.
@@ -155,8 +157,8 @@ Rules that keep this safe in Python:
   become read-only. Copy what you need inside the block (`frame.copy()` or `np.copy(...)`).
 - A received loan is read-only (`ReadOnlyMessageError` on writes).
 - A numpy view that you keep after a `receive_loan()` block keeps its chunk borrowed until it is
-  garbage-collected (airo-ipc logs a warning once). A subscriber may hold 4 borrowed chunks by
-  default (`TooManyLoansError` after that).
+  garbage-collected (airo-ipc logs a warning once). A subscriber may hold only a few borrowed
+  chunks at the same time (`TooManyLoansError` after that).
 
 On `Network()` the same code works; Zenoh copies the bytes anyway.
 
@@ -174,25 +176,46 @@ class MoveResponse(ipc.Message):
 def handle(request: MoveRequest) -> MoveResponse:
     return MoveResponse(success=True, duration=robot.move(request.target, request.speed))
 
+# Server process: handle requests in your own loop.
 server = ipc.server("ur5e/move", MoveRequest, MoveResponse, transport, handle)
+while running:
+    server.spin_once(timeout=0.1)   # handles at most one request
 
+# Client process
 client = ipc.client("ur5e/move", MoveRequest, MoveResponse, transport)
 client.wait_for_server(timeout=10.0)
 response = client.call(MoveRequest(target=q, speed=0.2), timeout=5.0)
-future = client.call_async(MoveRequest(target=q, speed=0.2))   # concurrent.futures.Future
 ```
 
-- The server handles requests on a background thread. With `spin=False`, call
-  `server.spin_once(timeout)` in your own loop instead.
 - If the handler raises, `call()` raises `ServiceError` with the remote error text.
 - With no server, `call()` raises `NoServerError` at once; a slow server gives `TimeoutError`.
-- On `Local()` a second server for the same service fails; on `Network()` the client uses the
-  first reply.
+- If two servers serve the same service, the client uses the first reply.
+
+### Services on `Local()`
+
+On `Local()`, services use Zenoh instead of iceoryx2, and need no configuration. The traffic stays
+on the host: each process listens on a random port on 127.0.0.1, and the processes find each
+other with multicast on the loopback interface. That discovery uses its own port and key
+namespace, so `Network()` sessions never see these services. Inside a Docker container this
+works too; processes in different containers need a shared network namespace (for example
+`--network host`), as they do for any localhost connection.
+
+This costs nothing that matters, because zero-copy is only important for large, frequent data:
+
+- Camera frames and other large streams go over publish/subscribe, which stays on iceoryx2 with
+  zero-copy loans.
+- Service requests and responses are usually small and rare: a command, a configuration value, a
+  trigger. A round trip takes about 80 µs instead of 27 µs (see [Performance](#performance)). The
+  work that a service starts, such as a robot motion or an image capture, takes milliseconds or
+  more, so the extra 50 µs is not noticeable.
+- Large service payloads still work: Zenoh copies them, the same as on `Network()`.
+
+In return, services have one implementation, so they behave the same on both transports.
 
 ## Processes, contexts and lifetime
 
 The module-level functions use one default `Context` per process. A context owns the iceoryx2
-node and the Zenoh sessions. Create one explicitly to control lifetime or sizing:
+node and the Zenoh sessions. Create one explicitly to control the lifetime:
 
 ```python
 with ipc.Context() as ctx:
@@ -203,38 +226,11 @@ with ipc.Context() as ctx:
 - Create endpoints in the process that uses them. With `multiprocessing`, use the **spawn**
   start method, and create every shared object (`Event`, `Queue`, ...) from the spawn context:
   `multiprocessing.get_context("spawn").Event()`. A context refuses to work in a forked child.
-- iceoryx2 fixes the size of a topic when the first process creates it. Every process of a system
-  must use the same `Context(iox2=Iox2Sizing(...))` (the defaults are generous and cheap: memory
-  is only used for chunks that are written).
+- airo-ipc starts no threads of its own: call `receive()` and `server.spin_once()` in your own
+  loop. Use each endpoint from one thread. `close()` and `Context.close()` are safe from any
+  thread; a blocked `receive()` then raises `ClosedError`, and `spin_once()` returns False.
 - A process that crashes, or is killed, leaves no stale shared memory behind: the next process
   cleans it up.
-
-## The Worker framework
-
-`Worker` is an optional convenience: a spawned process with a fixed-rate loop. Subscriber
-callbacks and service handlers run on the loop thread, so a Worker needs no locks.
-
-```python
-from airo_ipc.framework import Worker
-
-class CameraNode(Worker):
-    def _setup(self) -> None:
-        self._camera = open_camera()
-        self._frames = self._register_publisher("camera/front", CameraFrame, ipc.Local())
-
-    def _step(self) -> None:
-        with self._frames.loan() as frame:
-            self._camera.read_into(frame.rgb)
-
-    def _teardown(self) -> None:
-        self._camera.close()
-
-if __name__ == "__main__":
-    node = CameraNode(update_frequency=30)
-    node.start()
-```
-
-See [airo_ipc/framework/README.md](airo_ipc/framework/README.md).
 
 ## Examples
 
@@ -243,8 +239,6 @@ See [airo_ipc/framework/README.md](airo_ipc/framework/README.md).
 | `examples/pubsub.py [--network]` | pub/sub between two processes with loans |
 | `examples/service.py [--network]` | a service, including a handler error |
 | `examples/two_hosts.py` | streaming between two hosts with `--listen` / `--connect` |
-| `examples/framework/webcam.py` | OpenCV webcam: frames over `Local()`, latched resolution over `Network()` |
-| `examples/framework/airo_mono.py` | an airo-camera-toolkit `RGBCamera` backed by a subscriber |
 
 ## Performance
 
@@ -255,7 +249,7 @@ One Linux x86-64 machine, two processes, median one-way latency (`benchmarks/`):
 | Small message | 42 µs (spin-polling) | 40 µs | 97 µs |
 | 900 KB image, copy on receive | — | 283 µs | 747 µs |
 | 900 KB image, zero-copy read | 186 µs (spin-polling, can tear) | 157 µs (blocking) / 22 µs (spin-polling) | — |
-| Service round trip | — | 27 µs | 81 µs |
+| Service round trip | — | 80 µs (Zenoh on localhost) | 81 µs |
 
 The 0.3 subscriber polls in a busy loop and uses a full CPU core. The 1.0 subscriber sleeps until
 an event arrives; most of its latency is the operating system waking it up. Polling with

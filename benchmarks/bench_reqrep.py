@@ -1,19 +1,16 @@
-"""Service round-trip latency for the 1.0 API (iceoryx2 + Zenoh)."""
+"""Service round-trip latency (Zenoh, on Local() and Network())."""
 
 import multiprocessing
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import (
     print_summary,
     summarize,
     transport_pairs,
     write_result,
-)  # noqa: E402
+)
 
-import airo_ipc as ipc  # noqa: E402
+import airo_ipc as ipc
 
 
 class Req(ipc.Message):
@@ -28,8 +25,9 @@ def _serve(
     topic: str, transport: ipc.Transport, stop: "multiprocessing.synchronize.Event"
 ) -> None:
     with ipc.Context() as ctx:
-        ctx.server(topic, Req, Rep, transport, lambda r: Rep(v=r.v * 2))
-        stop.wait()
+        server = ctx.server(topic, Req, Rep, transport, lambda r: Rep(v=r.v * 2))
+        while not stop.is_set():
+            server.spin_once(timeout=0.1)
 
 
 def run(name: str, pair: tuple, n: int = 1000, warmup: int = 50) -> dict:
@@ -57,9 +55,9 @@ def run(name: str, pair: tuple, n: int = 1000, warmup: int = 50) -> dict:
 
 if __name__ == "__main__":
     print("Running 1.0 service round-trip benchmark...")
-    payload = {"benchmark": "reqrep", "api": "new", "results": {}}
+    payload = {"benchmark": "reqrep", "results": {}}
     for name, pair in transport_pairs().items():
         summary = run(name, pair)
         payload["results"][name] = summary
-        print_summary(f"new / reqrep / {name}", summary)
-    print(f"\nwrote {write_result('new_reqrep', payload)}")
+        print_summary(f"reqrep / {name}", summary)
+    print(f"\nwrote {write_result('reqrep', payload)}")

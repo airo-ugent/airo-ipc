@@ -32,21 +32,20 @@ black).
 ```
 airo_ipc/
   message.py      Message (ctypes.Structure) + metaclass, Array descriptor, schema fingerprint,
-                  32-byte header (schema, seq, stamp_ns, flags), with_shapes, loan guards
-  transport.py    Local, Network (+ env overrides), validate_topic
-  qos.py          Latest, Queue (MAX_QUEUE_DEPTH = 16)
-  defaults.py     Iox2Sizing (per Context; must match in every process)
+                  32-byte header (schema, seq, stamp_ns, reserved), with_shapes, loan guards
+  transport.py    Local (+ localhost Zenoh settings for its services), Network (+ env
+                  overrides), validate_topic
   endpoints.py    Publisher, Subscriber, Client, Server: all shared logic (seq numbers, loans,
-                  timeouts, threads, type checks, locks)
+                  timeouts, type checks, the lock that makes close() safe from any thread).
+                  No background threads: users call receive() / spin_once() in their loop.
   context.py      Context (owns backends, endpoint tracking, pid check), default_context()
   api.py          module-level publisher/subscriber/client/server (default context)
   backends/
-    base.py           port ABCs: PublisherPort, SubscriberPort, ClientPort, ServerPort
-    iox2_backend.py   iceoryx2 ports (companion event services for blocking waits, latched
-                      history, error envelope for services, dead-node cleanup)
-    zenoh_backend.py  Zenoh ports (callback + Condition, advanced pub/sub for latched topics,
-                      liveliness tokens for discovery, queryables, exit hook)
-  framework/worker.py  Worker (spawn process, fixed-rate loop, endpoints on the loop thread)
+    base.py           port ABCs, wait_slices(), MAX_QUEUE_DEPTH
+    iox2_backend.py   iceoryx2 pub/sub ports for Local() (companion event services for blocking
+                      waits, no history, fixed sizing constants, dead-node cleanup)
+    zenoh_backend.py  Zenoh ports for Network() and for all services, also on Local()
+                      (callback + Condition, liveliness tokens, queryables, exit hook)
 ```
 
 Backends only move bytes; put behaviour that must be the same on both transports in
@@ -56,17 +55,18 @@ Backends only move bytes; put behaviour that must be the same on both transports
 
 - ctypes refuses a late `_fields_` from a Python metaclass (3.13): the metaclass builds the whole
   namespace (including `_fields_`) before class creation.
-- iceoryx2 fixes service sizes at creation; openers may only ask for less. Hence one generous
-  `Iox2Sizing` for all processes and per-subscriber `buffer_size` for QoS.
+- iceoryx2 fixes service sizes at creation; openers may only ask for less. Hence fixed, generous
+  sizing constants in `iox2_backend.py` (the same in every process) and a per-subscriber
+  `buffer_size` for `depth`.
 - iceoryx2 `listener.timed_wait(Duration 0)` blocks forever: use `_wait()` in the backend.
 - iceoryx2 counts endpoints of SIGKILLed processes until `try_cleanup_dead_nodes()` runs.
-- iceoryx2 delivers history only on `publisher.update_connections()`; a backend thread does that
-  for latched publishers. Non-latched history is dropped by the subscriber via `FLAG_LATCHED`.
 - Zenoh `Handler.recv()` has no timeout; Python-callback subscribers/queryables block interpreter
   exit unless the session is closed from `threading._register_atexit` (plain `atexit` is too
   late).
-- Zenoh advanced (latched) publishers need `timestamping/enabled` and have no matching status.
 - `zenoh` stubs say `Querier.matching_status` is `bool`; at runtime it has `.matching`.
+- `Local()` services: Zenoh multicast scouting works on the loopback interface, also in a Docker
+  container (Linux `lo` has no MULTICAST flag, but it works; verified). The interface is given as
+  the IP `127.0.0.1`. A distinct scouting port (7448) keeps `Network()` sessions away.
 
 ## Conventions
 

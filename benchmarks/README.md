@@ -7,10 +7,9 @@ server) in a spawned process.
 benchmarks/
 ├── _common.py                  percentiles, JSON output, transport pairs
 ├── results/                    JSON output (gitignored)
-└── new_api/
-    ├── bench_pubsub_small.py   small message, Local() and Network()
-    ├── bench_pubsub_image.py   480x640x3 image: receive() copy, receive_loan(), spin-polling
-    └── bench_reqrep.py         service round trip
+├── bench_pubsub_small.py       small message, Local() and Network()
+├── bench_pubsub_image.py       480x640x3 image: receive() copy, receive_loan(), spin-polling
+└── bench_reqrep.py             service round trip
 ```
 
 `Network()` runs over loopback TCP between two Zenoh sessions, with multicast off.
@@ -19,9 +18,9 @@ benchmarks/
 
 ```bash
 uv sync --all-groups
-uv run python benchmarks/new_api/bench_pubsub_small.py
-uv run python benchmarks/new_api/bench_pubsub_image.py
-uv run python benchmarks/new_api/bench_reqrep.py
+uv run python benchmarks/bench_pubsub_small.py
+uv run python benchmarks/bench_pubsub_image.py
+uv run python benchmarks/bench_reqrep.py
 ```
 
 Each script prints a summary and writes JSON to `benchmarks/results/`.
@@ -39,7 +38,7 @@ Results on one Linux x86-64 machine (median / p95, µs):
 | Image, `receive()` copy | — | 283 / 431 | 747 / 1233 |
 | Image, `receive_loan()` | 186 / 237 (spin-polling) | 157 / 283 | 672 / 976 |
 | Image, `receive_loan()` spin-polling | — | 22 / 30 | (do not poll on Network) |
-| Service round trip | — | 27 / 33 | 81 / 122 |
+| Service round trip | — | 80 / 110 (Zenoh on loopback; 27 / 33 with the former iceoryx2 services) | 81 / 122 |
 
 Notes:
 

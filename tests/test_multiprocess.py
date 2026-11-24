@@ -110,7 +110,7 @@ class Value(ipc.Message):
 net = ipc.Network(multicast=False, namespace="{namespace}")
 sub = ipc.subscriber("exit/topic", Value, net)
 srv = ipc.server("exit/service", Value, Value, net, lambda v: v)
-pub = ipc.publisher("exit/topic", Value, net, latched=True)
+pub = ipc.publisher("exit/topic", Value, net)
 pub.publish(Value(x=1.0))
 print("done", flush=True)
 """

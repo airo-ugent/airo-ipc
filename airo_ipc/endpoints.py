@@ -2,11 +2,15 @@
 
 Create them with the factories in :mod:`airo_ipc` (or on a :class:`~airo_ipc.context.Context`);
 do not instantiate them directly. They behave the same on ``Local()`` and ``Network(...)``.
+
+Threads: airo-ipc starts no threads of its own. Call ``receive()`` and ``server.spin_once()`` in
+your own loop, and use each endpoint from one thread. ``close()`` (and ``Context.close()``) may be
+called from any thread: a blocked ``receive()`` or ``spin_once()`` then stops within
+:data:`~airo_ipc.backends.base.WAIT_SLICE_SECONDS`.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import itertools
 import logging
 import threading
@@ -15,21 +19,27 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Generic, TypeVar
 
-from airo_ipc.backends.base import ClientPort, PublisherPort, ServerPort, SubscriberPort
+from airo_ipc.backends.base import (
+    ClientPort,
+    PublisherPort,
+    ServerPort,
+    SubscriberPort,
+    check_timeout,
+    wait_slices,
+)
 from airo_ipc.errors import ClosedError
-from airo_ipc.message import FLAG_LATCHED, Message
+from airo_ipc.message import Message
 from airo_ipc.transport import Transport
 
 __all__ = ["Publisher", "Subscriber", "Client", "Server"]
 
 logger = logging.getLogger("airo_ipc")
 
+SERVER_POLL_SECONDS = 0.01  # how often wait_for_server() checks for a server
+
 M = TypeVar("M", bound=Message)
 Req = TypeVar("Req", bound=Message)
 Rep = TypeVar("Rep", bound=Message)
-
-#: Longest single blocking wait, so that Ctrl-C (KeyboardInterrupt) is handled quickly.
-_WAIT_SLICE_SECONDS = 0.1
 
 
 def _check_type(kind: str, expected: type[Message], msg: object) -> None:
@@ -40,10 +50,15 @@ def _check_type(kind: str, expected: type[Message], msg: object) -> None:
 
 
 class _Endpoint:
+    _port: Any
+
     def __init__(self, topic: str, transport: Transport) -> None:
         self._topic = topic
         self._transport = transport
         self._closed = False
+        # Held for every port call, so that close() from another thread never frees a port
+        # that is in use.
+        self._lock = threading.Lock()
 
     @property
     def topic(self) -> str:
@@ -61,8 +76,21 @@ class _Endpoint:
         if self._closed:
             raise ClosedError(f"{type(self).__name__} for '{self._topic}' is closed")
 
+    def _if_open(self, call: Callable[..., object], *args: Any) -> None:
+        """Run the port call ``call(*args)`` unless the endpoint is closed.
+
+        For cleanup calls: a closed port has already freed its loans and messages.
+        """
+        with self._lock:
+            if not self._closed:
+                call(*args)
+
     def close(self) -> None:
-        raise NotImplementedError
+        """Close the endpoint. Safe to call from any thread, and more than once."""
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._port.close()
 
     def __enter__(self: Any) -> Any:
         return self
@@ -78,20 +106,19 @@ class _Endpoint:
 class Publisher(_Endpoint, Generic[M]):
     """Sends messages of one type on one topic."""
 
+    _port: PublisherPort
+
     def __init__(
         self,
         port: PublisherPort,
         topic: str,
         msg_type: type[M],
         transport: Transport,
-        latched: bool,
     ) -> None:
         super().__init__(topic, transport)
         self._port = port
         self._msg_type = msg_type
-        self._flags = FLAG_LATCHED if latched else 0
         self._seq = itertools.count(1)
-        self._lock = threading.Lock()
 
     @property
     def msg_type(self) -> type[M]:
@@ -100,15 +127,16 @@ class Publisher(_Endpoint, Generic[M]):
     @property
     def has_subscribers(self) -> bool:
         """True if at least one subscriber is connected."""
-        self._check_open()
-        return self._port.has_subscribers
+        with self._lock:
+            self._check_open()
+            return self._port.has_subscribers
 
     def publish(self, msg: M) -> None:
         """Send a copy of ``msg``. Writes the sequence number and time into ``msg.meta``."""
-        self._check_open()
         _check_type("publish()", self._msg_type, msg)
         with self._lock:
-            msg._airo_set_meta(next(self._seq), time.time_ns(), self._flags)
+            self._check_open()
+            self._stamp(msg)
             self._port.send_copy(msg)
 
     @contextmanager
@@ -126,28 +154,31 @@ class Publisher(_Endpoint, Generic[M]):
                 frame.rgb[:] = image
                 frame.stamp = time.time()
         """
-        self._check_open()
-        msg, token = self._port.loan()
+        with self._lock:
+            self._check_open()
+            msg, token = self._port.loan()
         msg._airo_begin_loan(readonly=False)
         try:
             yield msg  # type: ignore[misc]
         except BaseException:
             msg._airo_end_loan()
-            self._port.discard(token)
+            self._if_open(self._port.discard, token)
             raise
         msg._airo_end_loan()
         with self._lock:
-            msg._airo_set_meta(next(self._seq), time.time_ns(), self._flags)
+            self._check_open()
+            self._stamp(msg)
             self._port.send(token)
 
-    def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._port.close()
+    def _stamp(self, msg: Message) -> None:
+        """Write the header. Call with ``self._lock`` held, so sequence numbers stay in order."""
+        msg._airo_set_meta(next(self._seq), time.time_ns())
 
 
 class Subscriber(_Endpoint, Generic[M]):
     """Receives messages of one type on one topic."""
+
+    _port: SubscriberPort
 
     def __init__(
         self, port: SubscriberPort, topic: str, msg_type: type[M], transport: Transport
@@ -155,10 +186,6 @@ class Subscriber(_Endpoint, Generic[M]):
         super().__init__(topic, transport)
         self._port = port
         self._msg_type = msg_type
-        self._lock = threading.Lock()
-        self._wait_lock = threading.Lock()  # backend wait objects are not shareable
-        self._callback_thread: threading.Thread | None = None
-        self._stop = threading.Event()
         self._warned_escape = False
 
     @property
@@ -168,8 +195,9 @@ class Subscriber(_Endpoint, Generic[M]):
     @property
     def has_publishers(self) -> bool:
         """True if at least one publisher is known for this topic."""
-        self._check_open()
-        return self._port.has_publishers
+        with self._lock:
+            self._check_open()
+            return self._port.has_publishers
 
     def receive(self, timeout: float | None = 0.0) -> M | None:
         """Return the next message as a copy that you own, or None.
@@ -182,13 +210,12 @@ class Subscriber(_Endpoint, Generic[M]):
         if item is None:
             return None
         msg, holder = item
-        if self._port.owned_messages:
+        if holder is None:  # the message is already a copy that the caller owns
             return msg  # type: ignore[return-value]
         try:
             return msg.copy()  # type: ignore[return-value]
         finally:
-            with self._lock:
-                self._port.release(holder)
+            self._if_open(self._port.release, holder)
 
     @contextmanager
     def receive_loan(self, timeout: float | None = 0.0) -> Iterator[M | None]:
@@ -216,9 +243,8 @@ class Subscriber(_Endpoint, Generic[M]):
             yield msg  # type: ignore[misc]
         finally:
             escaped = msg._airo_end_loan()
-            if not escaped:
-                with self._lock:
-                    self._port.release(holder)
+            if not escaped and holder is not None:
+                self._if_open(self._port.release, holder)
             elif not self._warned_escape:
                 self._warned_escape = True
                 logger.warning(
@@ -229,68 +255,21 @@ class Subscriber(_Endpoint, Generic[M]):
                 )
 
     def _take(self, timeout: float | None) -> tuple[Message, Any] | None:
-        self._check_open()
-        if timeout is not None and timeout < 0:
-            raise ValueError(f"timeout must be >= 0 or None, got {timeout}")
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
+        for wait in wait_slices(timeout):
             with self._lock:
                 self._check_open()
                 item = self._port.take()
-            if item is not None:
-                return item
-            if deadline is None:
-                wait = _WAIT_SLICE_SECONDS
-            else:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                wait = min(remaining, _WAIT_SLICE_SECONDS)
-            self._check_open()
-            with self._wait_lock:
-                self._port.wait(wait)
-
-    def on_message(self, callback: Callable[[M], None]) -> None:
-        """Call ``callback(msg)`` on a background thread for every received message.
-
-        Exceptions in the callback are logged and do not stop the thread. Call ``close()`` to
-        stop. Only one callback per subscriber.
-        """
-        self._check_open()
-        if self._callback_thread is not None:
-            raise RuntimeError(f"subscriber for '{self._topic}' already has a callback")
-
-        def loop() -> None:
-            while not self._stop.is_set():
-                try:
-                    msg = self.receive(timeout=_WAIT_SLICE_SECONDS)
-                except ClosedError:
-                    return
-                if msg is None:
-                    continue
-                try:
-                    callback(msg)
-                except Exception:
-                    logger.exception("on_message callback for '%s' raised", self._topic)
-
-        self._callback_thread = threading.Thread(
-            target=loop, name=f"airo_ipc-sub-{self._topic}", daemon=True
-        )
-        self._callback_thread.start()
-
-    def close(self) -> None:
-        if not self._closed:
-            self._stop.set()
-            self._closed = True  # waiting threads stop after their current wait slice
-            thread = self._callback_thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=2 * _WAIT_SLICE_SECONDS + 1.0)
-            with self._wait_lock, self._lock:
-                self._port.close()
+                if item is not None:
+                    return item
+                if wait > 0:
+                    self._port.wait(wait)
+        return None
 
 
 class Client(_Endpoint, Generic[Req, Rep]):
     """Calls a service: sends a request and waits for the response."""
+
+    _port: ClientPort
 
     def __init__(
         self,
@@ -299,17 +278,11 @@ class Client(_Endpoint, Generic[Req, Rep]):
         request_type: type[Req],
         response_type: type[Rep],
         transport: Transport,
-        thread_safe_port: bool,
     ) -> None:
         super().__init__(topic, transport)
         self._port = port
         self._request_type = request_type
         self._response_type = response_type
-        self._lock: threading.Lock | None = (
-            None if thread_safe_port else threading.Lock()
-        )
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
-        self._executor_lock = threading.Lock()
 
     @property
     def request_type(self) -> type[Req]:
@@ -327,12 +300,11 @@ class Client(_Endpoint, Generic[Req, Rep]):
 
     def wait_for_server(self, timeout: float | None = None) -> bool:
         """Block until a server is available. Return False if ``timeout`` seconds pass first."""
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while not self.has_server:
-            if deadline is not None and time.monotonic() >= deadline:
-                return False
-            time.sleep(0.01)
-        return True
+        for wait in wait_slices(timeout):
+            if self.has_server:
+                return True
+            time.sleep(min(wait, SERVER_POLL_SECONDS))
+        return False
 
     def call(self, request: Req, timeout: float | None = 5.0) -> Rep:
         """Send ``request`` and return the response.
@@ -344,42 +316,17 @@ class Client(_Endpoint, Generic[Req, Rep]):
         """
         self._check_open()
         _check_type("call()", self._request_type, request)
-        if timeout is not None and timeout < 0:
-            raise ValueError(f"timeout must be >= 0 or None, got {timeout}")
-        if self._lock is None:
-            response = self._port.call(request, timeout)
-        else:
-            with self._lock:
-                response = self._port.call(request, timeout)
+        check_timeout(timeout)
+        # Zenoh ports are thread-safe, so close() from another thread needs no lock here.
+        response = self._port.call(request, timeout)
         _check_type("the server's response", self._response_type, response)
         return response  # type: ignore[return-value]
 
-    def call_async(
-        self, request: Req, timeout: float | None = 5.0
-    ) -> concurrent.futures.Future[Rep]:
-        """Like :meth:`call`, but return a :class:`concurrent.futures.Future` at once."""
-        self._check_open()
-        with self._executor_lock:
-            if self._executor is None:
-                self._executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=4, thread_name_prefix=f"airo_ipc-client-{self._topic}"
-                )
-        return self._executor.submit(self.call, request, timeout)
-
-    def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            if self._executor is not None:
-                self._executor.shutdown(wait=True, cancel_futures=True)
-            if self._lock is None:
-                self._port.close()
-            else:
-                with self._lock:
-                    self._port.close()
-
 
 class Server(_Endpoint, Generic[Req, Rep]):
-    """Serves a service: calls ``handler(request)`` and sends its return value back."""
+    """Serves a service: :meth:`spin_once` calls ``handler(request)`` and sends the result back."""
+
+    _port: ServerPort
 
     def __init__(
         self,
@@ -389,21 +336,12 @@ class Server(_Endpoint, Generic[Req, Rep]):
         response_type: type[Rep],
         transport: Transport,
         handler: Callable[[Req], Rep],
-        spin: bool,
     ) -> None:
         super().__init__(topic, transport)
         self._port = port
         self._request_type = request_type
         self._response_type = response_type
         self._handler = handler
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        if spin:
-            self._thread = threading.Thread(
-                target=self._spin_loop, name=f"airo_ipc-server-{topic}", daemon=True
-            )
-            self._thread.start()
 
     @property
     def request_type(self) -> type[Req]:
@@ -416,25 +354,18 @@ class Server(_Endpoint, Generic[Req, Rep]):
     def spin_once(self, timeout: float = 0.0) -> bool:
         """Handle at most one request; wait up to ``timeout`` seconds for it.
 
-        Use this with ``spin=False`` to handle requests in your own loop. Return True if a
-        request was handled.
+        Call it in your own loop, for example ``while running: server.spin_once(0.1)``. Return
+        True if a request was handled; False if none came in time or the server was closed.
         """
         self._check_open()
-        if self._thread is not None and threading.current_thread() is not self._thread:
-            raise RuntimeError(
-                "spin_once() is not allowed on a server created with spin=True"
-            )
-        deadline = time.monotonic() + max(0.0, timeout)
-        while True:
-            remaining = deadline - time.monotonic()
-            with self._lock:
-                if self._closed:
-                    return False
-                item = self._port.receive(max(0.0, min(remaining, _WAIT_SLICE_SECONDS)))
+        for wait in wait_slices(max(0.0, timeout)):
+            if self._closed:
+                return False
+            item = self._port.receive(wait)
             if item is not None:
                 break
-            if time.monotonic() >= deadline or self._closed:
-                return False
+        else:
+            return False
         request, token = item
         try:
             response = self._handler(request)  # type: ignore[arg-type]
@@ -443,32 +374,7 @@ class Server(_Endpoint, Generic[Req, Rep]):
             )
         except Exception as e:
             logger.exception("handler of service '%s' raised", self._topic)
-            with self._lock:
-                if not self._closed:
-                    self._port.reply_error(token, f"{type(e).__name__}: {e}")
+            self._port.reply_error(token, e)
             return True
-        with self._lock:
-            if not self._closed:
-                self._port.reply(token, response)
+        self._port.reply(token, response)
         return True
-
-    def _spin_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.spin_once(_WAIT_SLICE_SECONDS)
-            except ClosedError:
-                return
-            except Exception:  # pragma: no cover - keep serving
-                logger.exception("server loop of '%s' failed", self._topic)
-
-    def close(self) -> None:
-        if not self._closed:
-            self._stop.set()
-            self._closed = True
-            if (
-                self._thread is not None
-                and self._thread is not threading.current_thread()
-            ):
-                self._thread.join(timeout=2 * _WAIT_SLICE_SECONDS + 1.0)
-            with self._lock:
-                self._port.close()
