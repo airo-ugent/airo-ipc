@@ -1,10 +1,14 @@
-"""iceoryx2 backend for publish/subscribe on ``Local()``: zero-copy shared memory on one host.
+"""iceoryx2 backend for publish/subscribe on ``Local()``.
 
-Services on ``Local()`` use Zenoh (see :class:`~airo_ipc.transport.Local`). Design notes (verified
-with iceoryx2 0.10.1):
+iceoryx2 passes messages between processes on one host through shared memory, without copying
+them. This module implements the publisher and subscriber ports of :mod:`airo_ipc.backends.base`
+with it. Services on ``Local()`` use Zenoh instead (see :class:`~airo_ipc.transport.Local`).
 
-- Every topic has a companion event service ``<topic>/@evt``. Publishers notify it after each
-  send, so subscribers can block in ``wait()`` instead of polling.
+Design notes (verified with iceoryx2 0.10.1):
+
+- Every topic has a second iceoryx2 service, ``<topic>/@evt``, that carries only wake-up
+  signals. Publishers signal it after each send, so subscribers can block in ``wait()`` instead
+  of polling.
 - Topics keep no history: a subscriber receives only messages published after it connected.
 - iceoryx2 fixes the size of a topic when the first process creates it; later processes may only
   ask for the same size or less. The sizes are therefore fixed constants of this module, the same

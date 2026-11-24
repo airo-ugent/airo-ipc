@@ -1,9 +1,16 @@
-"""Module-level factories that use the default :class:`~airo_ipc.context.Context` of the process.
+"""Shortcuts to create endpoints: ``airo_ipc.publisher``, ``subscriber``, ``client`` and ``server``.
 
-import airo_ipc as ipc
+Each function calls the method of the same name on the default
+:class:`~airo_ipc.context.Context` of the process. That context is created on the first call.
+Use these functions in scripts. Create a ``Context`` yourself to choose when the connections
+close.
 
-pub = ipc.publisher("camera/front", CameraFrame, ipc.Local())
-sub = ipc.subscriber("camera/front", CameraFrame, ipc.Network(connect="10.0.0.2"))
+Example::
+
+    import airo_ipc as ipc
+
+    pub = ipc.publisher("camera/front", CameraFrame, ipc.Local())
+    sub = ipc.subscriber("camera/front", CameraFrame, ipc.Local())
 """
 
 from __future__ import annotations

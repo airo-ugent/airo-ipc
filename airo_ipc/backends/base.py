@@ -1,9 +1,22 @@
-"""The small interface that every transport backend implements.
+"""Interfaces between the public API and the libraries that move the bytes.
 
-The public endpoint classes in :mod:`airo_ipc.endpoints` hold all shared logic (sequence numbers,
-loans, timeouts, type checks). A backend only moves bytes. Backends are not thread-safe; an
-endpoint holds its lock for every port call, so that ``close()`` from another thread is safe.
-Client and server ports are Zenoh ports, which are thread-safe, so their endpoints do not lock.
+airo-ipc sends messages with two libraries: iceoryx2 (shared memory, between processes on one
+host) and Zenoh (network, and services). A *backend* is the module that wraps one of them:
+``iox2_backend.py`` and ``zenoh_backend.py``.
+
+The public classes ``Publisher``, ``Subscriber``, ``Client`` and ``Server`` (in
+:mod:`airo_ipc.endpoints`) do the work that is the same for both libraries: sequence numbers,
+timeouts, type checks and message loans (a *loan* is a message that the user writes in place,
+in memory that the backend provides). Each of them holds one *port* and calls it for
+everything that depends on the library.
+
+A port is an object with the methods of one of the four classes below, for example
+``PublisherPort.send_copy(msg)``. Ports only move bytes and contain no other logic. Put new
+behaviour in ``endpoints.py`` when both libraries need it.
+
+Threads: a ``Publisher`` or ``Subscriber`` holds a lock during every call to its port. The lock
+protects the port, which is not thread-safe, and lets ``close()`` run safely from another
+thread. ``Client`` and ``Server`` use Zenoh ports, which are thread-safe, so they take no lock.
 """
 
 from __future__ import annotations

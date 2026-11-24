@@ -1,11 +1,16 @@
 """Zenoh backend for ``Network(...)`` (between hosts) and for services on ``Local()``.
 
+Zenoh is a messaging library that works between hosts. This module implements all four ports
+of :mod:`airo_ipc.backends.base` with it. A Zenoh *session* is one connection of a process to
+the network. A *key expression* is the name that publishers, subscribers and services match on.
+
 Design notes (verified with eclipse-zenoh 1.10.2):
 
 - Wire format: the raw message bytes (header + fields), see :meth:`Message.to_bytes`.
 - Key expressions: ``airo_ipc/<namespace>/<topic>`` for topics, ``.../<topic>/@srv`` for
-  services, and liveliness tokens under ``.../<topic>/@pub/<id>`` for ``has_publishers``.
-  ``has_subscribers`` and ``has_server`` use Zenoh's matching status.
+  services. Each publisher also holds a liveliness token (Zenoh's "I am alive" announcement)
+  under ``.../<topic>/@pub/<id>``, which ``has_publishers`` looks for. ``has_subscribers`` and
+  ``has_server`` use Zenoh's matching status (does a matching peer exist right now).
 - Zenoh's ``Handler.recv()`` has no timeout, so subscribers use a Python callback and a
   ``threading.Condition``.
 - A Python callback keeps the interpreter from exiting until its session is closed, and

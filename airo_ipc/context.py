@@ -1,7 +1,13 @@
-"""Context: owns the transport resources (iceoryx2 node, Zenoh sessions) of one process.
+"""Context: the object that owns the connections of one process.
 
-Most code uses the module-level functions (``airo_ipc.publisher(...)``), which use a default
-context per process. Create a :class:`Context` explicitly to control the lifetime::
+A context creates endpoints (publishers, subscribers, clients and servers). It opens the
+libraries below them the first time they are needed: an iceoryx2 node for ``Local()``
+publish/subscribe, and Zenoh sessions (network connections) for everything else. Closing the
+context closes all its endpoints and connections.
+
+Most code does not create a context: ``airo_ipc.publisher(...)`` and the other module-level
+functions use a default context per process. Create a :class:`Context` yourself to choose when
+the connections close::
 
     with ipc.Context() as ctx:
         pub = ctx.publisher("camera/front", CameraFrame, ipc.Local())
