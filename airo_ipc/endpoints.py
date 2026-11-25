@@ -20,10 +20,10 @@ from contextlib import contextmanager
 from typing import Any, Generic, TypeVar
 
 from airo_ipc.backends.base import (
-    ClientPort,
-    PublisherPort,
-    ServerPort,
-    SubscriberPort,
+    ClientDriver,
+    PublisherDriver,
+    ServerDriver,
+    SubscriberDriver,
     check_timeout,
     wait_slices,
 )
@@ -50,13 +50,13 @@ def _check_type(kind: str, expected: type[Message], msg: object) -> None:
 
 
 class _Endpoint:
-    _port: Any
+    _driver: Any
 
     def __init__(self, topic: str, transport: Transport) -> None:
         self._topic = topic
         self._transport = transport
         self._closed = False
-        # Held for every port call, so that close() from another thread never frees a port
+        # Held for every driver call, so that close() from another thread never frees a driver
         # that is in use.
         self._lock = threading.Lock()
 
@@ -77,9 +77,9 @@ class _Endpoint:
             raise ClosedError(f"{type(self).__name__} for '{self._topic}' is closed")
 
     def _if_open(self, call: Callable[..., object], *args: Any) -> None:
-        """Run the port call ``call(*args)`` unless the endpoint is closed.
+        """Run the driver call ``call(*args)`` unless the endpoint is closed.
 
-        For cleanup calls: a closed port has already freed its loans and messages.
+        For cleanup calls: a closed driver has already freed its loans and messages.
         """
         with self._lock:
             if not self._closed:
@@ -90,7 +90,7 @@ class _Endpoint:
         with self._lock:
             if not self._closed:
                 self._closed = True
-                self._port.close()
+                self._driver.close()
 
     def __enter__(self: Any) -> Any:
         return self
@@ -106,17 +106,17 @@ class _Endpoint:
 class Publisher(_Endpoint, Generic[M]):
     """Sends messages of one type on one topic."""
 
-    _port: PublisherPort
+    _driver: PublisherDriver
 
     def __init__(
         self,
-        port: PublisherPort,
+        driver: PublisherDriver,
         topic: str,
         msg_type: type[M],
         transport: Transport,
     ) -> None:
         super().__init__(topic, transport)
-        self._port = port
+        self._driver = driver
         self._msg_type = msg_type
         self._seq = itertools.count(1)
 
@@ -129,7 +129,7 @@ class Publisher(_Endpoint, Generic[M]):
         """True if at least one subscriber is connected."""
         with self._lock:
             self._check_open()
-            return self._port.has_subscribers
+            return self._driver.has_subscribers
 
     def publish(self, msg: M) -> None:
         """Send a copy of ``msg``. Writes the sequence number and time into ``msg.meta``."""
@@ -137,7 +137,7 @@ class Publisher(_Endpoint, Generic[M]):
         with self._lock:
             self._check_open()
             self._stamp(msg)
-            self._port.send_copy(msg)
+            self._driver.send_copy(msg)
 
     @contextmanager
     def loan(self) -> Iterator[M]:
@@ -156,19 +156,19 @@ class Publisher(_Endpoint, Generic[M]):
         """
         with self._lock:
             self._check_open()
-            msg, token = self._port.loan()
+            msg, token = self._driver.loan()
         msg._airo_begin_loan(readonly=False)
         try:
             yield msg  # type: ignore[misc]
         except BaseException:
             msg._airo_end_loan()
-            self._if_open(self._port.discard, token)
+            self._if_open(self._driver.discard, token)
             raise
         msg._airo_end_loan()
         with self._lock:
             self._check_open()
             self._stamp(msg)
-            self._port.send(token)
+            self._driver.send(token)
 
     def _stamp(self, msg: Message) -> None:
         """Write the header. Call with ``self._lock`` held, so sequence numbers stay in order."""
@@ -178,13 +178,17 @@ class Publisher(_Endpoint, Generic[M]):
 class Subscriber(_Endpoint, Generic[M]):
     """Receives messages of one type on one topic."""
 
-    _port: SubscriberPort
+    _driver: SubscriberDriver
 
     def __init__(
-        self, port: SubscriberPort, topic: str, msg_type: type[M], transport: Transport
+        self,
+        driver: SubscriberDriver,
+        topic: str,
+        msg_type: type[M],
+        transport: Transport,
     ) -> None:
         super().__init__(topic, transport)
-        self._port = port
+        self._driver = driver
         self._msg_type = msg_type
         self._warned_escape = False
 
@@ -197,7 +201,7 @@ class Subscriber(_Endpoint, Generic[M]):
         """True if at least one publisher is known for this topic."""
         with self._lock:
             self._check_open()
-            return self._port.has_publishers
+            return self._driver.has_publishers
 
     def receive(self, timeout: float | None = 0.0) -> M | None:
         """Return the next message as a copy that you own, or None.
@@ -215,7 +219,7 @@ class Subscriber(_Endpoint, Generic[M]):
         try:
             return msg.copy()  # type: ignore[return-value]
         finally:
-            self._if_open(self._port.release, holder)
+            self._if_open(self._driver.release, holder)
 
     @contextmanager
     def receive_loan(self, timeout: float | None = 0.0) -> Iterator[M | None]:
@@ -244,7 +248,7 @@ class Subscriber(_Endpoint, Generic[M]):
         finally:
             escaped = msg._airo_end_loan()
             if not escaped and holder is not None:
-                self._if_open(self._port.release, holder)
+                self._if_open(self._driver.release, holder)
             elif not self._warned_escape:
                 self._warned_escape = True
                 logger.warning(
@@ -258,29 +262,29 @@ class Subscriber(_Endpoint, Generic[M]):
         for wait in wait_slices(timeout):
             with self._lock:
                 self._check_open()
-                item = self._port.take()
+                item = self._driver.take()
                 if item is not None:
                     return item
                 if wait > 0:
-                    self._port.wait(wait)
+                    self._driver.wait(wait)
         return None
 
 
 class Client(_Endpoint, Generic[Req, Rep]):
     """Calls a service: sends a request and waits for the response."""
 
-    _port: ClientPort
+    _driver: ClientDriver
 
     def __init__(
         self,
-        port: ClientPort,
+        driver: ClientDriver,
         topic: str,
         request_type: type[Req],
         response_type: type[Rep],
         transport: Transport,
     ) -> None:
         super().__init__(topic, transport)
-        self._port = port
+        self._driver = driver
         self._request_type = request_type
         self._response_type = response_type
 
@@ -296,7 +300,7 @@ class Client(_Endpoint, Generic[Req, Rep]):
     def has_server(self) -> bool:
         """True if a server for this service is available."""
         self._check_open()
-        return self._port.has_server
+        return self._driver.has_server
 
     def wait_for_server(self, timeout: float | None = None) -> bool:
         """Block until a server is available. Return False if ``timeout`` seconds pass first."""
@@ -317,8 +321,8 @@ class Client(_Endpoint, Generic[Req, Rep]):
         self._check_open()
         _check_type("call()", self._request_type, request)
         check_timeout(timeout)
-        # Zenoh ports are thread-safe, so close() from another thread needs no lock here.
-        response = self._port.call(request, timeout)
+        # Zenoh drivers are thread-safe, so close() from another thread needs no lock here.
+        response = self._driver.call(request, timeout)
         _check_type("the server's response", self._response_type, response)
         return response  # type: ignore[return-value]
 
@@ -326,11 +330,11 @@ class Client(_Endpoint, Generic[Req, Rep]):
 class Server(_Endpoint, Generic[Req, Rep]):
     """Serves a service: :meth:`spin_once` calls ``handler(request)`` and sends the result back."""
 
-    _port: ServerPort
+    _driver: ServerDriver
 
     def __init__(
         self,
-        port: ServerPort,
+        driver: ServerDriver,
         topic: str,
         request_type: type[Req],
         response_type: type[Rep],
@@ -338,7 +342,7 @@ class Server(_Endpoint, Generic[Req, Rep]):
         handler: Callable[[Req], Rep],
     ) -> None:
         super().__init__(topic, transport)
-        self._port = port
+        self._driver = driver
         self._request_type = request_type
         self._response_type = response_type
         self._handler = handler
@@ -361,7 +365,7 @@ class Server(_Endpoint, Generic[Req, Rep]):
         for wait in wait_slices(max(0.0, timeout)):
             if self._closed:
                 return False
-            item = self._port.receive(wait)
+            item = self._driver.receive(wait)
             if item is not None:
                 break
         else:
@@ -374,7 +378,7 @@ class Server(_Endpoint, Generic[Req, Rep]):
             )
         except Exception as e:
             logger.exception("handler of service '%s' raised", self._topic)
-            self._port.reply_error(token, e)
+            self._driver.reply_error(token, e)
             return True
-        self._port.reply(token, response)
+        self._driver.reply(token, response)
         return True

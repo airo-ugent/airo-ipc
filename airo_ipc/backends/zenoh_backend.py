@@ -1,6 +1,6 @@
 """Zenoh backend for ``Network(...)`` (between hosts) and for services on ``Local()``.
 
-Zenoh is a messaging library that works between hosts. This module implements all four ports
+Zenoh is a messaging library that works between hosts. This module implements all four drivers
 of :mod:`airo_ipc.backends.base` with it. A Zenoh *session* is one connection of a process to
 the network. A *key expression* is the name that publishers, subscribers and services match on.
 
@@ -39,7 +39,12 @@ from typing import Any
 
 import zenoh
 
-from airo_ipc.backends.base import ClientPort, PublisherPort, ServerPort, SubscriberPort
+from airo_ipc.backends.base import (
+    ClientDriver,
+    PublisherDriver,
+    ServerDriver,
+    SubscriberDriver,
+)
 from airo_ipc.errors import (
     AiroIpcError,
     NoServerError,
@@ -135,27 +140,27 @@ class ZenohBackend:
 
     def publisher(
         self, transport: Network, topic: str, msg_type: type[Message]
-    ) -> PublisherPort:
+    ) -> PublisherDriver:
         net = transport.resolve()
-        return ZenohPublisherPort(self.session(net), net, topic, msg_type)
+        return ZenohPublisherDriver(self.session(net), net, topic, msg_type)
 
     def subscriber(
         self, transport: Network, topic: str, msg_type: type[Message], depth: int
-    ) -> SubscriberPort:
+    ) -> SubscriberDriver:
         net = transport.resolve()
-        return ZenohSubscriberPort(self.session(net), net, topic, msg_type, depth)
+        return ZenohSubscriberDriver(self.session(net), net, topic, msg_type, depth)
 
     def client(
         self, transport: Transport, topic: str, req: type[Message], rep: type[Message]
-    ) -> ClientPort:
+    ) -> ClientDriver:
         net = transport.resolve()
-        return ZenohClientPort(self.session(net), net, topic, req, rep)
+        return ZenohClientDriver(self.session(net), net, topic, req, rep)
 
     def server(
         self, transport: Transport, topic: str, req: type[Message], rep: type[Message]
-    ) -> ServerPort:
+    ) -> ServerDriver:
         net = transport.resolve()
-        return ZenohServerPort(self.session(net), net, topic, req, rep)
+        return ZenohServerDriver(self.session(net), net, topic, req, rep)
 
     def close(self) -> None:
         with self._lock:
@@ -221,7 +226,7 @@ class _Liveliness:
 # ------------------------------------------------------------------------------------------------
 
 
-class ZenohPublisherPort(PublisherPort):
+class ZenohPublisherDriver(PublisherDriver):
     def __init__(
         self,
         session: zenoh.Session,
@@ -265,7 +270,7 @@ class ZenohPublisherPort(PublisherPort):
         _undeclare(self._token, self._publisher)
 
 
-class ZenohSubscriberPort(SubscriberPort):
+class ZenohSubscriberDriver(SubscriberDriver):
     def __init__(
         self,
         session: zenoh.Session,
@@ -320,7 +325,7 @@ class ZenohSubscriberPort(SubscriberPort):
 # ------------------------------------------------------------------------------------------------
 
 
-class ZenohClientPort(ClientPort):
+class ZenohClientDriver(ClientDriver):
     def __init__(
         self,
         session: zenoh.Session,
@@ -376,7 +381,7 @@ class ZenohClientPort(ClientPort):
         _undeclare(self._querier)
 
 
-class ZenohServerPort(ServerPort):
+class ZenohServerDriver(ServerDriver):
     def __init__(
         self,
         session: zenoh.Session,
@@ -420,7 +425,7 @@ class ZenohServerPort(ServerPort):
 
     def reply_error(self, token: Any, error: BaseException) -> None:
         try:
-            # ZenohClientPort.call parses this "<Type>: <text>" format.
+            # ZenohClientDriver.call parses this "<Type>: <text>" format.
             token.reply_err(f"{type(error).__name__}: {error}".encode("utf-8"))
         finally:
             token.drop()

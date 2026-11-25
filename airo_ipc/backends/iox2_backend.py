@@ -1,7 +1,7 @@
 """iceoryx2 backend for publish/subscribe on ``Local()``.
 
 iceoryx2 passes messages between processes on one host through shared memory, without copying
-them. This module implements the publisher and subscriber ports of :mod:`airo_ipc.backends.base`
+them. This module implements the publisher and subscriber drivers of :mod:`airo_ipc.backends.base`
 with it. Services on ``Local()`` use Zenoh instead (see :class:`~airo_ipc.transport.Local`).
 
 Design notes (verified with iceoryx2 0.10.1):
@@ -25,7 +25,7 @@ from typing import Any
 
 import iceoryx2 as iox2
 
-from airo_ipc.backends.base import MAX_QUEUE_DEPTH, PublisherPort, SubscriberPort
+from airo_ipc.backends.base import MAX_QUEUE_DEPTH, PublisherDriver, SubscriberDriver
 from airo_ipc.errors import AiroIpcError, SchemaMismatchError, TooManyLoansError
 from airo_ipc.message import Message
 
@@ -86,8 +86,8 @@ def _open_error(what: str, topic: str, error: Exception) -> AiroIpcError:
     return AiroIpcError(f"cannot open {what} '{topic}' on Local(): {text}")
 
 
-class _Iox2Port:
-    """Base of every iceoryx2 port: it owns ``self._service``."""
+class _Iox2Driver:
+    """Base of every iceoryx2 driver: it owns ``self._service``."""
 
     _service: Any
     _last_cleanup = 0.0
@@ -149,13 +149,13 @@ class Iox2Backend:
         except Exception as e:
             raise _open_error("event service", name, e) from e
 
-    def publisher(self, topic: str, msg_type: type[Message]) -> PublisherPort:
-        return Iox2PublisherPort(self, topic, msg_type)
+    def publisher(self, topic: str, msg_type: type[Message]) -> PublisherDriver:
+        return Iox2PublisherDriver(self, topic, msg_type)
 
     def subscriber(
         self, topic: str, msg_type: type[Message], depth: int
-    ) -> SubscriberPort:
-        return Iox2SubscriberPort(self, topic, msg_type, depth)
+    ) -> SubscriberDriver:
+        return Iox2SubscriberDriver(self, topic, msg_type, depth)
 
     def close(self) -> None:
         self._node = None
@@ -166,7 +166,7 @@ class Iox2Backend:
 # ------------------------------------------------------------------------------------------------
 
 
-class Iox2PublisherPort(_Iox2Port, PublisherPort):
+class Iox2PublisherDriver(_Iox2Driver, PublisherDriver):
     def __init__(
         self, backend: Iox2Backend, topic: str, msg_type: type[Message]
     ) -> None:
@@ -204,7 +204,7 @@ class Iox2PublisherPort(_Iox2Port, PublisherPort):
         self._service = self._events = None  # frees the service records
 
 
-class Iox2SubscriberPort(_Iox2Port, SubscriberPort):
+class Iox2SubscriberDriver(_Iox2Driver, SubscriberDriver):
     def __init__(
         self, backend: Iox2Backend, topic: str, msg_type: type[Message], depth: int
     ) -> None:

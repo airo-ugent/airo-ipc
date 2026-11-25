@@ -91,10 +91,10 @@ class Context:
 
         def make() -> Publisher[M]:
             if isinstance(transport, Local):
-                port = self._iox2_backend().publisher(topic, msg_type)
+                driver = self._iox2_backend().publisher(topic, msg_type)
             else:
-                port = self._zenoh_backend().publisher(transport, topic, msg_type)
-            return Publisher(port, topic, msg_type, transport)
+                driver = self._zenoh_backend().publisher(transport, topic, msg_type)
+            return Publisher(driver, topic, msg_type, transport)
 
         return self._create(make)
 
@@ -126,12 +126,12 @@ class Context:
 
         def make() -> Subscriber[M]:
             if isinstance(transport, Local):
-                port = self._iox2_backend().subscriber(topic, msg_type, depth)
+                driver = self._iox2_backend().subscriber(topic, msg_type, depth)
             else:
-                port = self._zenoh_backend().subscriber(
+                driver = self._zenoh_backend().subscriber(
                     transport, topic, msg_type, depth
                 )
-            return Subscriber(port, topic, msg_type, transport)
+            return Subscriber(driver, topic, msg_type, transport)
 
         return self._create(make)
 

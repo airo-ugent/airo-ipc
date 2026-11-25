@@ -41,10 +41,10 @@ airo_ipc/
   context.py      Context (owns backends, endpoint tracking, pid check), default_context()
   api.py          module-level publisher/subscriber/client/server (default context)
   backends/
-    base.py           port ABCs, wait_slices(), MAX_QUEUE_DEPTH
-    iox2_backend.py   iceoryx2 pub/sub ports for Local() (companion event services for blocking
+    base.py           driver ABCs, wait_slices(), MAX_QUEUE_DEPTH
+    iox2_backend.py   iceoryx2 pub/sub drivers for Local() (companion event services for blocking
                       waits, no history, fixed sizing constants, dead-node cleanup)
-    zenoh_backend.py  Zenoh ports for Network() and for all services, also on Local()
+    zenoh_backend.py  Zenoh drivers for Network() and for all services, also on Local()
                       (callback + Condition, liveliness tokens, queryables, exit hook)
 ```
 

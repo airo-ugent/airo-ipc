@@ -7,16 +7,16 @@ host) and Zenoh (network, and services). A *backend* is the module that wraps on
 The public classes ``Publisher``, ``Subscriber``, ``Client`` and ``Server`` (in
 :mod:`airo_ipc.endpoints`) do the work that is the same for both libraries: sequence numbers,
 timeouts, type checks and message loans (a *loan* is a message that the user writes in place,
-in memory that the backend provides). Each of them holds one *port* and calls it for
-everything that depends on the library.
+in memory that the backend provides). Each of them has one *driver* and calls it for
+everything that depends on the underlying library.
 
-A port is an object with the methods of one of the four classes below, for example
-``PublisherPort.send_copy(msg)``. Ports only move bytes and contain no other logic. Put new
+A driver is an object with the methods of one of the four classes below, for example
+``PublisherDriver.send_copy(msg)``. Drivers only move bytes and contain no other logic. Put new
 behaviour in ``endpoints.py`` when both libraries need it.
 
-Threads: a ``Publisher`` or ``Subscriber`` holds a lock during every call to its port. The lock
-protects the port, which is not thread-safe, and lets ``close()`` run safely from another
-thread. ``Client`` and ``Server`` use Zenoh ports, which are thread-safe, so they take no lock.
+Threads: a ``Publisher`` or ``Subscriber`` holds a lock during every call to its driver. The lock
+protects the driver, which is not thread-safe, and lets ``close()`` run safely from another
+thread. ``Client`` and ``Server`` use Zenoh drivers, which are thread-safe, so they take no lock.
 """
 
 from __future__ import annotations
@@ -29,10 +29,10 @@ from typing import Any
 from airo_ipc.message import Message
 
 __all__ = [
-    "PublisherPort",
-    "SubscriberPort",
-    "ClientPort",
-    "ServerPort",
+    "PublisherDriver",
+    "SubscriberDriver",
+    "ClientDriver",
+    "ServerDriver",
     "MAX_QUEUE_DEPTH",
     "check_timeout",
     "wait_slices",
@@ -77,7 +77,7 @@ def _slices(deadline: float | None) -> Iterator[float]:
         yield min(remaining, WAIT_SLICE_SECONDS)
 
 
-class PublisherPort(ABC):
+class PublisherDriver(ABC):
     @abstractmethod
     def loan(self) -> tuple[Message, Any]:
         """Return a message placed in send memory, and a token for `send` / `discard`."""
@@ -102,7 +102,7 @@ class PublisherPort(ABC):
     def close(self) -> None: ...
 
 
-class SubscriberPort(ABC):
+class SubscriberDriver(ABC):
     @abstractmethod
     def take(self) -> tuple[Message, Any] | None:
         """Return the next message and a holder for `release`, or None.
@@ -126,7 +126,7 @@ class SubscriberPort(ABC):
     def close(self) -> None: ...
 
 
-class ClientPort(ABC):
+class ClientDriver(ABC):
     @abstractmethod
     def call(self, request: Message, timeout: float | None) -> Message:
         """Send ``request`` and return an owned response.
@@ -145,7 +145,7 @@ class ClientPort(ABC):
     def close(self) -> None: ...
 
 
-class ServerPort(ABC):
+class ServerDriver(ABC):
     @abstractmethod
     def receive(self, timeout: float) -> tuple[Message, Any] | None:
         """Wait up to ``timeout`` seconds; return an owned request and a reply token, or None."""
